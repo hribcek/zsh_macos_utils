@@ -1,0 +1,210 @@
+#!/usr/bin/env zsh
+set -x
+# --- DEPENDENCIES ---
+# Requires 'coreutils' (for gdate): brew install coreutils
+# Requires 'osxmetadata' (python tool): pip install osxmetadata
+# --------------------
+
+# CONFIGURATION
+# Set the python version where osxmetadata is installed (if different from global)
+export PYENV_VERSION=3.13.11
+
+# GLOBAL VARIABLES
+targetDir=""
+backupFile=""
+lockFile=""
+typeset -A backupDb
+
+# --- LOCKING MECHANISM ---
+lockAcquired=0
+lockRetries=50
+lockSleep=0.1
+
+logMsg() {
+  local msg="${1}"
+  local timestamp
+  timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  echo "[${timestamp}] ${msg}"
+}
+
+# --- CLEANUP & TRAPS ---
+cleanup() {
+  # Remove lock directory if we own it
+  if (( lockAcquired )) && [[ -d "${lockFile}" ]]; then
+    rmdir "${lockFile}" 2>/dev/null
+  fi
+}
+
+trap cleanup EXIT
+trap "exit 1" INT TERM
+
+acquireLock() {
+  local retries=${lockRetries}
+  while (( retries > 0 )); do
+    if mkdir "${lockFile}" 2>/dev/null ; then
+      lockAcquired=1
+      return 0
+    fi
+    sleep ${lockSleep}
+    (( retries-- ))
+  done
+  return 1
+}
+
+# --- CORE FUNCTIONS ---
+
+processParameters() {
+  # Input: /Volumes/MyDisk
+  targetDir="${1:-${PWD}}"    # Default to current directory if not provided
+  targetDir="${targetDir%/}"  # Remove trailing slash
+
+  if [[ -z "${targetDir}" ]]; then
+    logMsg "Error: Directory not found at ${targetDir}."
+    return 1
+  fi
+
+  # Prepare Paths
+  local backupRoot="${HOME}/.attrbackup"
+  local sanitizedName
+
+  # Convert "/Volumes/T7" -> "VolumesT7" for filename
+  sanitizedName="${targetDir//\//}"
+  backupFile="${backupRoot}/${sanitizedName}.mdbackup"
+  lockFile="${backupFile}.lock"
+
+  # Validate Backup Exists
+  if [[ ! -f "${backupFile}" ]]; then
+    logMsg "Error: Backup file not found at ${backupFile}."
+    return 1
+  fi
+
+  # Validate Tool Exists
+  if ! command -v osxmetadata &> /dev/null ; then
+    logMsg "Error: 'osxmetadata' tool is not found in PATH."
+    return 1
+  fi
+
+  return 0
+}
+
+# Loads backup file into global associative array 'backupDb'
+# Handles deduplication (keeps the newest timestamp for a given file path)
+loadBackup() {
+  local filePath
+  local rawTimestamp
+  local currentStoredTs
+
+  # Clear array
+  backupDb=()
+
+  logMsg "Loading backup database..."
+
+  # Read CSV format: "/path/to/file<TAB>2026-02-01 16:46:56 +0000" or [this is current format]
+  # Read CSV format: "/path/to/file<TAB>1769964416"                   [we might switch to this format in the future]
+  while IFS=$'\t' read -r filePath rawTimestamp || [[ -n "${filePath}" ]]; do
+    # Skip empty lines or malformed lines
+    if [[ -z "${filePath}" || -z "${rawTimestamp}" ]]; then
+      continue
+    fi
+
+    # Check if rawTimestamp is a number (epoch) or a date string
+    if [[ ! "${rawTimestamp}" =~ ^[0-9]+$ ]]; then
+      # Convert date string to epoch
+      rawTimestamp=$(gdate -d "${rawTimestamp}" "+%s")
+    fi
+
+    # Deduplication Logic: Keep newest
+    currentStoredTs="${backupDb[${filePath}]}"
+
+    if [[ -z "${currentStoredTs}" ]]; then
+      backupDb[${filePath}]="${rawTimestamp}"
+    else
+      if (( rawTimestamp > currentStoredTs )); then
+        backupDb[${filePath}]="${rawTimestamp}"
+      fi
+    fi
+  done < "${backupFile}"
+
+  logMsg "Database loaded. Unique entries: ${#backupDb}"
+  return 0
+}
+
+# Iterates through the loaded DB and restores metadata
+restoreMetadata() {
+  local filePath
+  local timestamp
+  local formattedDate
+  local allCount=0
+  local missingCount=0
+  local errorCount=0
+  local targetPath
+
+  logMsg "Starting restore process for ${targetDir}..."
+
+  # Iterate over every file in our deduplicated memory DB
+  for filePath in "${(@k)backupDb}" ; do
+    targetPath="${targetDir}/${filePath}"
+
+    # Check Physical Existence on the Volume
+    if [[ ! -e "${targetPath}" ]]; then
+      (( missingCount++ ))
+      continue
+    fi
+
+    timestamp="${backupDb[${filePath}]}"
+
+    # Format Date for osxmetadata (YYYY-MM-DD HH:MM:SS)
+    # The @ is required for gdate to parse unix epoch
+    formattedDate=$(gdate -d "@${timestamp}" "+%Y-%m-%d %H:%M:%S")
+
+    # Apply Metadata
+    # This is the "magic" command that actually updates Last Opened
+    # If it fails, we log the error but continue with the next file
+    if ! osxmetadata --set lastused "${formattedDate}" "${targetPath}" &>/dev/null ; then
+      logMsg "Warning: Failed to update metadata for ${targetPath}."
+      (( errorCount++ ))
+    fi
+
+    (( allCount++ ))
+
+    # Feedback every 50 files
+    if (( allCount % 50 == 0 )); then
+        logMsg "Info: running... restored ${allCount} files so far."
+    fi
+  done
+
+  echo "" # Clear progress line
+  logMsg "Restore Complete. Updated: ${allCount}, Skipped (Missing): ${missingCount}, Errors: ${errorCount}."
+}
+
+process() {
+  if ! processParameters "${1}" ; then
+    return 1
+  fi
+
+  # Acquire Lock
+  if ! acquireLock ; then
+    logMsg "Error: Could not acquire lock for ${backupFile}. Is another restore running?"
+    return 1
+  fi
+
+  if ! loadBackup ; then
+    return 1
+  fi
+
+  if (( ${#backupDb} == 0 )); then
+    logMsg "Warning: Backup database is empty."
+    return 0
+  fi
+
+  restoreMetadata
+
+  return 0
+}
+
+# -- MAIN --
+if ! process "${@}" ; then
+  exit 1
+fi
+
+exit 0

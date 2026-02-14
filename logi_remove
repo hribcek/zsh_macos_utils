@@ -1,0 +1,114 @@
+#!/usr/bin/env zsh
+
+# 1. Prevent zsh errors
+# We must set this FIRST, otherwise array definitions below crash if files don't exist.
+setopt +o nomatch
+
+# 2. Configuration
+subsystem="xyz.hribar.nukelogi"
+RS_DAEMON_NAME="LogiRightSight"
+RS_DIR="${RS_DAEMON_NAME}ForWebcams"
+RS_SUPPORT_DIR="/Library/Application Support/Logitech.localized"
+
+depots_dirs=(
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/logi_ai_prompt_builder"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_aip"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_cep"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_illustrator"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_indesign"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_installer"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_lightroom_classic"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_photoshop"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_premiere_pro"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_uxp"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/right_sight"
+  "/Library/Application Support/Logitech.localized/LogiOptionsPlus/logi_ai_prompt_builder"
+  "${RS_SUPPORT_DIR}/${RS_DIR}"
+)
+
+services=(
+  "LogiPluginService"
+  "LogiPluginServiceNative"
+  "LogiPluginServiceExt"
+  "logioptionsplus_agent"
+  "logioptionsplus_updater"
+)
+
+packages=(
+  "com.logi.optionsplus.pkg"
+  "com.logitech.LogiRightSightForWebcams.pkg"
+)
+
+system_files=(
+  "/Applications/Utilities/LogiPluginService.app"
+  "/Applications/logioptionsplus.app"
+  "/Library/Application Support/Logi"
+)
+
+launch_items=(
+  "/Library/LaunchDaemons/com.logi."*
+  "/Library/LaunchDaemons/com.logitech."*
+  "/Library/LaunchAgents/com.logi."*
+  "/Library/LaunchAgents/com.logitech."*
+  "${HOME}/Library/LaunchAgents/com.logi."*
+  "${HOME}/Library/LaunchAgents/com.logitech."*
+)
+
+user_data=(
+  "${HOME}/Library/Application Support/LogiOptionsPlus"
+  "${HOME}/Library/Preferences/com.logi."*
+  "${HOME}/Library/Preferences/com.logitech."*
+  "${HOME}/Library/Caches/com.logi."*
+  "/Users/Shared/LogiOptionsPlus"
+)
+
+# 3. Ask for password upfront
+sudo -v
+
+echo "⚠️  Starting Deep Clean..."
+
+# 4. Stop the nuke daemon
+echo "💀  Stopping Our Nuke Daemon..."
+sudo launchctl bootout system/${subsystem} 2>/dev/null
+
+# 5. Unlock everything
+echo "🔓 Unlocking protected directories..."
+
+# 5.1 Unlock the Options+ depots directory
+for depot in "${depots_dirs[@]}" ; do
+  # Check if anything exists (File OR Directory)
+  if [[ -e "${depot}" ]]; then
+    # --- CHECK 1: IS IT LOCKED? ---
+    if /bin/ls -ldO "${depot}" | grep -q "uchg" ; then
+      echo "🔓 Unlocking protected path \"${depot}\""
+      sudo chflags -R nouchg,noschg "${depot}"
+    fi
+  fi
+done
+
+# 5.2 Cleaning all the depots directories
+sudo rm -rf -- "${depots_dirs[@]}"
+
+# 6. Kill active processes
+echo "💀 Killing processes..."
+for service in "${services[@]}"; do
+  sudo killall "${service}" 2>/dev/null
+done
+
+# 7. Remove system receipts
+for pkg in "${packages[@]}"; do
+  sudo pkgutil --forget "${pkg}" 2>/dev/null
+done
+
+# 8. Delete apps and system support files
+echo "🗑️  Deleting system files..."
+sudo rm -rf "${system_files[@]}"
+
+# 9. Remove launch items
+sudo rm -f "${launch_items[@]}"
+
+# 10. Remove user data
+echo "🧹 Cleaning user data..."
+rm -rf "${user_data[@]}"
+
+echo "✅ Clean sweep complete. RESTART NOW before installing."

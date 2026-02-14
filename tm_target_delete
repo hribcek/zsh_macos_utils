@@ -1,0 +1,29 @@
+#!/usr/bin/env zsh
+
+# 1. Define the specific target from your error log
+#filename="/Volumes/X9ProSSD/2025-12-29-152326.previous"
+filename="${1}"
+if [[ ${filename} =~ (20(2[5-9]|[3-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[0-1])-[0-9]{6}) ]]; then
+  timestamp=${match[1]}
+
+  echo "🎯 ${filename}: Target set."
+
+  # 2. Tell Time Machine to forget this backup (breaks the database link)
+  sudo tmutil delete -d /Volumes/X9ProSSD -t "${timestamp}"
+
+  # 3. Force Unlock and Destroy the directory
+  echo "💥 engaging force delete..."
+  sudo chflags -R nouchg "${filename}"
+  sudo chmod -RN "${filename}"
+  sudo xattr -c -r "${filename}"
+  sudo rm -rf "${filename}"
+
+  # 4. Verify
+  if [ -d "${filename}" ]; then
+    echo "❌ ${filename}: Still there."
+  else
+    echo "✅ ${filename}: GONE."
+  fi
+else
+  echo "❌ ${filename}: Incorrect filename."
+fi

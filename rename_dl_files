@@ -1,0 +1,61 @@
+#!/usr/bin/env zsh
+
+# Load the zsh datetime module for 'strftime'
+zmodload zsh/datetime
+
+dryRun=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+  dryRun=1
+fi
+
+# Loop through all regular files
+for fname in *(.) ; do
+  # Skip the script itself and hidden files
+  # Fix: Changed {$0:t} to ${0:t}
+  if [[ "${fname}" == "${0:t}" || "${fname}" == .* ]]; then
+    continue
+  fi
+
+  # 1. Get Birth Time (Creation Date)
+  # GNU stat uses '-c' (or --format).
+  # %W = Time of file birth, seconds since Epoch.
+  # If birth time is unsupported, it might return 0 or -.
+  birthEpoch=$(stat -c "%W" "${fname}")
+
+  # Fallback: If birth time is missing (0 or -), use Modification time (%Y)
+  if [[ "${birthEpoch}" == "0" || "${birthEpoch}" == "-" ]]; then
+      birthEpoch=$(stat -c "%Y" "${fname}")
+  fi
+
+  # Convert Epoch to "YYYY-mm-dd HH.MM.SS" using Zsh's built-in strftime
+  strftime -s birthTime "%Y-%m-%d %H.%M.%S" "${birthEpoch}"
+
+  # 2. Handle Extensions
+  ext=${fname:e:l}
+
+  if [[ "${ext}" == "jpeg" ]]; then
+    newExt="jpg"
+  else
+    newExt="${ext}"
+  fi
+
+  # 3. Construct Target Name
+  target="${birthTime}.${newExt}"
+
+  # 4. Handle Collisions
+  counter=1
+  while [[ -e "${target}" && "${target}" != "${fname}" ]]; do
+    target="${birthTime}_${counter}.${newExt}"
+    ((counter++))
+  done
+
+  # 5. Rename
+  if [[ "${fname}" != "${target}" ]]; then
+    if (( ! dryRun )); then
+      mv -n "${fname}" "${target}"
+      echo "✅ ${fname} -> ${target}"
+    else
+      echo "🔍 DRY-RUN: ${fname} -> ${target}"
+    fi
+  fi
+done

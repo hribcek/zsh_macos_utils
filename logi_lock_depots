@@ -1,0 +1,102 @@
+#!/usr/bin/env zsh
+
+# Configuration
+RS_DAEMON_NAME="LogiRightSight"
+RS_DIR="${RS_DAEMON_NAME}ForWebcams"
+RS_SUPPORT_DIR="/Library/Application Support/Logitech.localized"
+
+LOCKED_PATHS=(
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/logi_ai_prompt_builder"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_aip"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_cep"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_illustrator"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_indesign"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_installer"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_lightroom_classic"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_photoshop"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_premiere_pro"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/plugin_uxp"
+  "/Library/Application Support/Logi/LogiOptionsPlus/depots/654570/right_sight"
+  "/Library/Application Support/Logitech.localized/LogiOptionsPlus/logi_ai_prompt_builder"
+  "${RS_SUPPORT_DIR}/${RS_DIR}"
+)
+
+# Our own logging utility
+LOG_BIN="/usr/local/bin/nukelog"
+
+# --- FUNCTION: Log Event ---
+log_event() {
+  local msg="${1}"
+  local timestamp
+
+  # 1. Get the timestamp
+  if (( $+commands[gdate] )); then
+    timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  else
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  fi
+
+  # 2. Print to standard out (for debug/console logs)
+  echo "[${timestamp}] ${SELF} CleanAndLock [PPID:${$}] ${msg}"
+
+  # 3. Call the logging utility
+  if [[ -x "${LOG_BIN}" ]]; then
+    "${LOG_BIN}" "${SELF}" "CleanAndLock" "[PPID:${$}] ${msg}"
+  fi
+}
+
+# --- HELPER FUNCTION ---
+# Unlocks, Empties, and Re-locks a path.
+# Usage: secure_and_clean_path "/path/to/depot"
+function secure_and_clean_path() {
+  local target_path="${1}"
+
+  # 1. Unlock recursively
+  # We use -R because if a file inside is locked, we can't delete it otherwise.
+  /usr/bin/chflags -R nouchg "${target_path}"
+
+  # 2. Clean contents
+  # Only proceed if it is a directory.
+  if [[ -d "${target_path}" ]]; then
+    /bin/rm -rf "${target_path:?}"/*(D)
+  fi
+
+  # 3. Apply Immutable Lock
+  /usr/bin/chflags uchg "${target_path}"
+}
+
+# 1. Ask for password upfront
+sudo -v
+
+# 2. PERIMETER AUDIT
+for depot_path in "${LOCKED_PATHS[@]}" ; do
+  # Check if anything exists (File OR Directory)
+  if [[ -e "${depot_path}" ]]; then
+
+    # --- CHECK 1: IS IT UNLOCKED? ---
+    if ! /bin/ls -ldO "${depot_path}" | grep -q "uchg" ; then
+      log_event "🔓 Audit: Protected path \"${depot_path}\" is UNLOCKED"
+
+      secure_and_clean_path "${depot_path}"
+      log_event "🔒 Locked (and cleaned) path \"${depot_path}\""
+
+    else
+      # --- CHECK 2: IS IT LOCKED BUT DIRTY? ---
+      # It is locked, but we must ensure it is empty.
+      if [[ -d "${depot_path}" ]]; then
+        # Check for files inside using Zsh glob (ND)
+        local -a contents
+        contents=("${depot_path}"/*(ND))
+
+        if (( ${#contents} > 0 )); then
+          log_event "⚠️ Audit: Protected path \"${depot_path}\" is locked but NOT EMPTY."
+
+          # Since the folder is already locked, we assume we have authority 
+          # to enforce the "empty" state, so we clean it immediately.
+          secure_and_clean_path "${depot_path}"
+          log_event "🧹 Cleaned and re-locked \"${depot_path}\""
+        fi
+      fi
+    fi
+  fi
+done

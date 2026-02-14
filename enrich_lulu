@@ -1,0 +1,218 @@
+#!/usr/bin/env zsh
+
+# 0. Environment & Context
+# Dependencies: curl, jq, dig, ifconfig, awk
+
+# Global cache for system IPs (Associative Array)
+typeset -gA SYSTEM_IPS
+
+# --- Function Definitions ---
+
+# Fallback for _bh_error_ if not loaded from environment
+if (( ! ${+functions[_bh_error_]} )); then
+  _bh_error_() {
+    echo "❌ Error: ${1}" >&2
+  }
+fi
+
+# Function: Pre-calculate local IPs and Broadcast addresses
+cache_system_ips() {
+  local ip_data
+  local ip_addr
+  local label
+
+  # Parse ifconfig for IPv4 (inet) and broadcast addresses
+  # Uses awk to identify 'inet' and optional 'broadcast' fields
+  # Output format: "IP Label" (e.g., "192.168.1.5 Local Machine")
+  ip_data=$(ifconfig | awk '/inet / {
+    print $2 " Local Machine"
+    for (i = 3; i <= NF; i++) {
+      if ($i == "broadcast") {
+        print $(i + 1) " Local Broadcast"
+      }
+    }
+  }')
+
+  # Populate the associative array
+  # Rule: 'read' is a command, so we need a space before the semicolon
+  while read -r ip_addr label ; do
+    if [[ -n "${ip_addr}" ]]; then
+      SYSTEM_IPS[${ip_addr}]="${label}"
+    fi
+  done <<< "${ip_data}"
+}
+
+get_asn_from_ip() {
+  local target_ip="${1}"
+  local response
+  local ipapi_status
+  local asn_val
+
+  if [[ -z "${target_ip}" ]]; then
+    return 0
+  fi
+
+  # 1. Check exact System IPs (Machine or Broadcast)
+  if [[ -n "${SYSTEM_IPS[${target_ip}]}" ]]; then
+    echo "${SYSTEM_IPS[${target_ip}]}"
+    return 0
+  fi
+
+  # 2. Robust Private/Local IP Check (Network Ranges)
+  # Uses [.] to enforce literal dot matching
+  if [[ "${target_ip}" =~ ^(192[.]168[.]|10[.]|172[.](1[6-9]|2[0-9]|3[0-1])[.]|127[.]|169[.]254[.]) ]]; then
+    echo "Private/Local Network"
+    return 0
+  fi
+
+  # Rate limit to avoid 429 errors
+  sleep 1.5
+
+  response=$(curl -s --max-time 5 "http://ip-api.com/json/${target_ip}?fields=status,as")
+
+  if [[ -z "${response}" ]]; then
+    _bh_error_ "ASN lookup failed for ${target_ip} (empty response)"
+    echo "N/A"
+    return 0
+  fi
+
+  # Parse JSON
+  ipapi_status=$(echo "${response}" | jq -r '.status')
+
+  if [[ "${ipapi_status}" == "success" ]]; then
+    # Extract AS number and name
+    asn_val=$(echo "${response}" | jq -r '.as')
+    echo "${asn_val}"
+  else
+    echo "N/A"
+  fi
+}
+
+get_hostname_ptr() {
+  local target_ip="${1}"
+  local ptr_record
+
+  # Use dig for reverse lookup
+  ptr_record=$(dig +short -x "${target_ip}" 2>/dev/null)
+
+  # Remove trailing dot if present
+  ptr_record="${ptr_record%.}"
+
+  if [[ -n "${ptr_record}" ]]; then
+    echo "${ptr_record}"
+  else
+    echo "N/A"
+  fi
+}
+
+resolve_ip_from_host() {
+  local host="${1}"
+  local resolved_ip
+
+  # Get first IP found
+  resolved_ip=$(dig +short "${host}" | grep -E '^[0-9.]+$' | head -n1)
+  echo "${resolved_ip}"
+}
+
+# --- Main Logic ---
+
+process_logi_file() {
+  local input_file="${1}"
+  local line
+
+  # State variables for the current block
+  local current_ip=""
+  local current_port=""
+  local current_hostname=""
+  local has_data=0
+
+  if [[ ! -f "${input_file}" ]]; then
+    _bh_error_ "Input file '${input_file}' not found."
+    return 1
+  fi
+
+  # Helper to flush the buffer
+  print_block() {
+    if (( has_data == 0 )); then
+      return
+    fi
+
+    # 1. Resolve IP if we only have a Hostname
+    if [[ -z "${current_ip}" && -n "${current_hostname}" ]]; then
+      current_ip=$(resolve_ip_from_host "${current_hostname}")
+    fi
+
+    # 2. Resolve Hostname if we only have an IP
+    if [[ -n "${current_ip}" && -z "${current_hostname}" ]]; then
+      current_hostname=$(get_hostname_ptr "${current_ip}")
+    fi
+
+    # 3. Get ASN (requires IP)
+    local asn_val="N/A"
+    if [[ -n "${current_ip}" ]]; then
+      asn_val=$(get_asn_from_ip "${current_ip}")
+    fi
+
+    # Output formatted block
+    echo "hostname: ${current_hostname:-N/A}"
+    echo "ASN: ${asn_val}"
+    echo "ip: ${current_ip:-N/A}"
+    echo "port: ${current_port:-N/A}"
+  }
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Trim whitespace
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
+    # Pass through Headers (### ...)
+    if [[ "${line}" =~ ^### ]]; then
+      print_block
+
+      # Reset state
+      current_ip=""
+      current_port=""
+      current_hostname=""
+      has_data=0
+
+      echo "${line}"
+      continue
+    fi
+
+    # Empty lines trigger a block flush
+    if [[ -z "${line}" ]]; then
+      print_block
+
+      # Reset state
+      current_ip=""
+      current_port=""
+      current_hostname=""
+      has_data=0
+
+      echo ""
+      continue
+    fi
+
+    # Parse key-value pairs
+    if [[ "${line}" =~ ^ip:[[:space:]]*(.*) ]]; then
+      current_ip="${match[1]}"
+      has_data=1
+    elif [[ "${line}" =~ ^port:[[:space:]]*(.*) ]]; then
+      current_port="${match[1]}"
+      has_data=1
+    elif [[ "${line}" =~ ^hostname:[[:space:]]*(.*) ]]; then
+      current_hostname="${match[1]}"
+      has_data=1
+    fi
+  done < "${input_file}"
+
+  # Flush final block
+  print_block
+}
+
+# Execution
+# 1. Cache local system IPs first
+cache_system_ips
+
+# 2. Process the file
+process_logi_file "${1:-logi.txt}"

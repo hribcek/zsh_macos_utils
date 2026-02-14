@@ -1,0 +1,33 @@
+#!/usr/bin/env zsh
+
+# --- Configuration ---
+subsystem="xyz.hribar.sssilencer"
+default_range="1d"
+
+# --- 0. Sudo Refresh ---
+# Ask for password upfront so the UI doesn't break later
+sudo -v
+
+# --- 1. Handle Input Parameter ---
+# Use the first argument if provided, otherwise use default
+range="${1:-${default_range}}"
+
+# --- 2. Validate Input ---
+if [[ ! "${range}" =~ ^[1-9][0-9]*[mhd]\|boot$ ]]; then
+  echo "❌ Error: Invalid time format '${range}'"
+  echo "Usage: ${0:t} [time]"
+  echo "Examples: 10m (minutes), 4h (hours), 2d (days), or boot. No 0m allowed."
+  exit 1
+fi
+
+# --- 3. Checking Service Status
+echo "⚙️  Service Status (${subsystem}):"
+if ! sudo launchctl list | grep "${subsystem}" ; then
+  echo "   (Not loaded)"
+fi
+echo "--------------------------------------------------------------------------"
+
+# --- 4. Execute Log Search ---
+echo "🔍 Searching logs for subsystem '${subsystem}' (Last: ${range})..."
+echo "--------------------------------------------------------------------------"
+/usr/bin/log show --predicate "subsystem == '${subsystem}'" --style syslog --last "${range}" # | grep --color=always -E "Patrol|Error|Anomaly|$"

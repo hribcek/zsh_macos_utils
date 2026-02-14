@@ -1,0 +1,14 @@
+#!/usr/bin/env zsh
+set -x
+subsystem="xyz.hribar.nukelogi"
+plist_loc="/Library/LaunchDaemons/${subsystem}.plist"
+modes=(silent alert cleanup secure)
+valid_modes="${(j:|:)modes}"
+search_pattern="<string>(${valid_modes})</string>"
+pattern=$(grep -n -E "${search_pattern}" "${plist_loc}")
+line_no=$(echo "${pattern}" | cut -d: -f1)
+line=$(echo "${pattern}" | cut -d: -f2-)
+
+printf "line_no:>%d<, line:>%s<\n" "${line_no}" "${line}"
+
+set +x

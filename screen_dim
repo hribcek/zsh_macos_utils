@@ -1,0 +1,60 @@
+#!/usr/bin/env zsh
+
+# --- Find Command Paths Dynamically ---
+brightness_cmd=$(command -v brightness)
+kbd_brightness_cmd=$(command -v mac-brightnessctl)
+jq_cmd=$(command -v jq)
+
+if [[ -z "${brightness_cmd}" ]]; then
+  echo "Error: Required command (brightness) not found in PATH." >&2
+  exit 1
+fi
+if [[ -z "${kbd_brightness_cmd}" ]]; then
+  echo "Error: Required command (mac-brightnessctl) not found in PATH." >&2
+  exit 1
+fi
+if [[ -z "${jq_cmd}" ]]; then
+  echo "Error: Required command (jq) not found in PATH." >&2
+  exit 1
+fi
+
+# --- End Path Check ---
+
+# --- Dynamic Built-in Display ID Retrieval ---
+get_builtin_id() {
+  "${brightness_cmd}" -l 2>/dev/null | grep 'built-in' | awk '{print $2}' | tr -d ':'
+}
+
+builtin_display_id=$(get_builtin_id)
+
+if [[ -z "${builtin_display_id}" ]]; then
+  echo "Error: Could not find built-in display ID. Exiting." >&2
+  exit 1
+fi
+# --- End Dynamic ID Detection ---
+
+
+# --- Configuration ---
+display_brightness_dim=0.0
+keyboard_brightness_dim=0.125
+# --- End Configuration ---
+
+# --- DISPLAY COUNT LOGIC using JQ ---
+if [[ -n "${jq_cmd}" ]]; then
+  display_count=$(/usr/sbin/system_profiler SPDisplaysDataType -json | "${jq_cmd}" '.. | .spdisplays_ndrvs? | length' | grep -v 'null' | grep -v '^0$' | awk 'NR==1')
+else
+  # Fallback if jq is somehow missing
+  display_count=$(/usr/sbin/system_profiler SPDisplaysDataType | grep -c "Resolution:")
+fi
+# -------------------------------------
+
+if [[ "${display_count}" -gt 1 ]]; then
+  # 1. Dim the built-in screen
+  ${brightness_cmd} -d ${builtin_display_id} ${display_brightness_dim} 2>/dev/null
+
+  # 2. Set keyboard brightness (silencing all output)
+  ${kbd_brightness_cmd} ${keyboard_brightness_dim} &>/dev/null
+
+  # 3. DISABLE keyboard automatic brightness (silencing all output)
+  ${kbd_brightness_cmd} -a 0 &>/dev/null
+fi

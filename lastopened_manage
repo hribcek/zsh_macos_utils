@@ -1,0 +1,343 @@
+#!/usr/bin/env zsh
+
+# --- DEPENDENCIES ---
+# Requires 'coreutils' (for gdate): brew install coreutils
+# --------------------
+
+# --- LOGGING ---
+logMsg() {
+  local msg="${1}"
+  local timestamp
+  timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  echo "[${timestamp}] ${msg}"
+}
+
+# --- ARGUMENT PARSING ---
+
+mode=""
+targetDir=""
+
+for arg in "${@}" ; do
+  case "${arg}" in
+    --consolidate|--check|--fix|--prune)
+      if [[ -n "${mode}" ]]; then
+        logMsg "Error: Multiple modes specified. Please choose one."
+        exit 1
+      fi
+      # Strip the leading '--' to normalize mode name
+      mode="${arg#--}"
+      ;;
+    -*)
+      logMsg "Error: Unknown option '${arg}'."
+      exit 1
+      ;;
+    *)
+      if [[ -n "${targetDir}" ]]; then
+        logMsg "Warning: Multiple target directories specified. Using the first one."
+      else
+        targetDir="${arg}"
+      fi
+      ;;
+  esac
+done
+
+# Apply Defaults
+mode="${mode:-check}"
+targetDir="${targetDir:-${PWD}}"
+
+if [[ ! -d "${targetDir}" ]]; then
+  logMsg "Error: Directory not found at ${targetDir}"
+  exit 1
+fi
+
+# --- SETUP PATHS ---
+backupRoot="${HOME}/.attrbackup"
+targetDir="${targetDir%/}"
+sanitizedName="${targetDir//\//}"
+backupFile="${backupRoot}/${sanitizedName}.mdbackup"
+lockFile="${backupFile}.lock"
+
+if [[ ! -d "${backupRoot}" ]]; then
+  mkdir -p "${backupRoot}"
+fi
+
+# --- LOCKING MECHANISM ---
+lockAcquired=0
+
+cleanup() {
+  if (( lockAcquired )) && [[ -d "${lockFile}" ]]; then
+    rmdir "${lockFile}" 2>/dev/null
+  fi
+}
+
+# Fix for Ctrl+C:
+# 1. Trap EXIT to ensure cleanup always runs when the script ends.
+# 2. Trap INT/TERM to explicitly exit, which triggers the EXIT trap.
+trap cleanup EXIT
+trap "exit 1" INT TERM
+
+lockRetries=50
+lockSleep=0.1
+
+acquireLock() {
+  local retries=${lockRetries}
+  while (( retries > 0 )); do
+    if mkdir "${lockFile}" 2>/dev/null ; then
+      lockAcquired=1
+      return 0
+    fi
+    sleep ${lockSleep}
+    (( retries-- ))
+  done
+  return 1
+}
+
+# --- DATE UTILITIES ---
+
+# Convert date string to timestamp for comparison
+getTimestamp() {
+  local dateStr="${1}"
+  if [[ -z "${dateStr}" || "${dateStr}" == "(null)" ]]; then
+    echo 0
+    return
+  fi
+  # Use gdate to parse diverse input formats
+  gdate -d "${dateStr}" +%s 2>/dev/null || echo 0
+}
+
+# --- CORE FUNCTIONS ---
+
+typeset -A backupDb
+
+# Loads backup file into global associative array 'backupDb'
+# Handles deduplication (consolidate logic in memory)
+loadBackup() {
+  local currentStoredDate
+  local tsStored
+  local tsNew
+
+  backupDb=()
+
+  if [[ -f "${backupFile}" ]]; then
+    # Read line by line. IFS is Tab.
+    while IFS=$'\t' read -r appName appDate ; do
+      # Skip comments or empty lines
+      if [[ "${appName}" == \#* || -z "${appName}" ]]; then
+        continue
+      fi
+
+      # Deduplication Logic: Keep newest
+      currentStoredDate="${backupDb[${appName}]}"
+
+      if [[ -z "${currentStoredDate}" ]]; then
+        backupDb[${appName}]="${appDate}"
+      else
+        tsStored=$(getTimestamp "${currentStoredDate}")
+        tsNew=$(getTimestamp "${appDate}")
+
+        if (( tsNew > tsStored )); then
+          backupDb[${appName}]="${appDate}"
+        fi
+      fi
+    done < "${backupFile}"
+  fi
+}
+
+saveBackup() {
+  local tempFile
+  local sortedApps
+  local appDate
+
+  logMsg "Writing consolidated backup to ${backupFile}..."
+
+  tempFile="${backupFile}.tmp"
+  echo "# Format: AppName <TAB> LastUsedDate" > "${tempFile}"
+
+  sortedApps=("${(@k)backupDb}")
+
+  # Zsh expansion flag (o) sorts the array
+  for appName in "${(@o)sortedApps}" ; do
+    appDate="${backupDb[${appName}]}"
+    echo "${appName}\t${appDate}" >> "${tempFile}"
+  done
+
+  mv "${tempFile}" "${backupFile}"
+}
+
+# --- SHARED LOGIC (DRY) ---
+
+# Global counter for synchronizations/anomalies
+changeCount=0
+
+# Scans directory and compares with backupDb
+# Arguments:
+#   1: operationMode ("check" or "fix")
+syncDirectories() {
+  local operationMode="${1}"
+  local appName
+  local rawFsDate
+  local tsFs
+  local rawBackupDate
+  local tsBackup
+  local touchFmt
+
+  changeCount=0
+
+  for appPath in "${targetDir}"/*.app(N) ; do
+    appName=$(basename "${appPath}")
+
+    # Get Filesystem Date
+    rawFsDate="$(mdls -name kMDItemLastUsedDate -raw "${appPath}")"
+
+    tsFs=$(getTimestamp "${rawFsDate}")
+
+    # Get Backup Date
+    rawBackupDate="${backupDb[${appName}]}"
+
+    tsBackup=$(getTimestamp "${rawBackupDate}")
+
+    if (( tsFs > tsBackup )); then
+      (( changeCount++ ))
+      if [[ "${operationMode}" == "fix" ]]; then
+        logMsg "[SYNC -> BACKUP] ${appName}"
+        backupDb[${appName}]="${rawFsDate}"
+      else
+        logMsg "[ANOMALY] ${appName}: Filesystem is newer."
+        logMsg "          FS: ${rawFsDate} > Backup: ${rawBackupDate:-None}"
+      fi
+
+    elif (( tsBackup > tsFs )); then
+      (( changeCount++ ))
+      if [[ "${operationMode}" == "fix" ]]; then
+        logMsg "[SYNC -> APP] ${appName}"
+
+        # 1. Touch (BSD format: YYYYMMDDhhmm.ss)
+        touchFmt=$(gdate -d "${rawBackupDate}" "+%Y%m%d%H%M.%S")
+        touch -a -t "${touchFmt}" "${appPath}"
+
+        # 2. Xattr
+        xattr -w "com.backup.lastopened" "${rawBackupDate}" "${appPath}"
+
+        # 3. Spotlight Re-index
+        mdimport "${appPath}"
+      else
+        logMsg "[ANOMALY] ${appName}: Backup is newer."
+        logMsg "          Backup: ${rawBackupDate} > FS: ${rawFsDate:-None}"
+      fi
+    fi
+  done
+}
+
+# --- COMMAND IMPLEMENTATIONS ---
+
+runConsolidate() {
+  logMsg "Task: Consolidate backup file only."
+  logMsg "File: ${backupFile}"
+
+  loadBackup
+  local count="${#backupDb}"
+  logMsg "Loaded and consolidated ${count} unique entries."
+
+  saveBackup
+  logMsg "Consolidation complete."
+}
+
+runPrune() {
+  logMsg "Task: Prune backup (consolidate + remove missing files)."
+  logMsg "Target: ${targetDir}"
+
+  loadBackup
+  local initialCount="${#backupDb}"
+  local prunedCount=0
+  local appName
+
+  # Iterate over all keys in the backup database
+  for appName in "${(@k)backupDb}" ; do
+    # Check if app exists in target directory
+    if [[ ! -e "${targetDir}/${appName}" ]]; then
+      logMsg "Pruning missing entry: ${appName}"
+      unset "backupDb[${appName}]"
+      (( prunedCount++ ))
+    fi
+  done
+
+  if (( prunedCount > 0 )); then
+    saveBackup
+    logMsg "Pruned ${prunedCount} entries. New total: ${#backupDb}"
+  else
+    logMsg "No missing files found. Backup is clean."
+    # Save anyway to ensure consolidation
+    saveBackup
+  fi
+}
+
+runCheck() {
+  logMsg "Task: Check for anomalies (Read-Only)."
+  logMsg "Target: ${targetDir}"
+
+  loadBackup
+  syncDirectories "check"
+
+  if (( changeCount == 0 )); then
+    logMsg "No anomalies found. Backup and Filesystem are in sync."
+    return 1 # Return 1 (False) to indicate NO issues found
+  else
+    logMsg "Found ${changeCount} anomalies."
+    return 0 # Return 0 (True) to indicate issues found
+  fi
+}
+
+runFix() {
+  logMsg "Task: Fix anomalies (Bi-directional Sync)."
+  logMsg "Target: ${targetDir}"
+
+  loadBackup
+  syncDirectories "fix"
+
+  if (( changeCount > 0 )); then
+    saveBackup
+    logMsg "Fixed ${changeCount} items and saved backup."
+  else
+    logMsg "Nothing to fix. Everything is in sync."
+    # Save anyway to ensure consolidation
+    saveBackup
+  fi
+}
+
+# --- MAIN EXECUTION ---
+
+logMsg "Starting management utility..."
+
+if ! acquireLock ; then
+  logMsg "Error: Could not acquire lock for ${backupFile}."
+  exit 1
+fi
+
+case "${mode}" in
+  consolidate)
+    runConsolidate
+    ;;
+  prune)
+    runPrune
+    ;;
+  fix)
+    runFix
+    ;;
+  check)
+    # runCheck returns 0 (true) if anomalies found
+    if runCheck ; then
+      echo ""
+      # Use `read -q` for Zsh single-char confirmation (y/n)
+      if read -q "?Anomalies detected. Would you like to fix them now? (y/n) " ; then
+        echo "" # Newline after response
+        logMsg "User requested fix. Proceeding..."
+        runFix
+      else
+        echo "" # Newline after response
+        logMsg "User declined fix."
+      fi
+    fi
+    ;;
+esac
+
+logMsg "Done."

@@ -1,0 +1,167 @@
+#!/usr/bin/env zsh
+
+function _bh_normal_() {
+  print "${*}"
+}
+function _bh_error_() {
+  print "❌ ${*}"
+}
+function _bh_warning_() {
+  print "⚠️  ${*}"
+}
+function _bh_success_() {
+  print "✅ ${*}"
+}
+
+# Default values
+zipfile=""
+zipfix=0
+sevenfix=0
+dittofix=0
+jarfix=0
+
+# Argument Parsing Loop
+while (( ${#argv} > 0 )); do
+  arg="${1}"
+  shift
+
+  case "${arg}" in
+    --help)
+      print "\nUsage: ${0:t} [--zip] [--7z] [--ditto] [--jar] <*.zip>\n    Passing options means skipping confirmation. It always goes through all.\n"
+      exit 0
+      ;;
+    --zip)
+      zipfix=1
+      ;;
+    --7z)
+      sevenfix=1
+      ;;
+    --ditto)
+      dittofix=1
+      ;;
+    --jar)
+      jarfix=1
+      ;;
+    *.zip)
+      zipfile="${arg}"
+      ;;
+    *)
+      _bh_warning_ "Ignoring unknown argument: '${arg}'"
+      ;;
+  esac
+done
+
+# Validation
+if [[ -z "${zipfile}" ]]; then
+  _bh_error_ "Missing input file name."
+  exit 1
+fi
+
+if [[ ! -f "${zipfile}" ]]; then
+  _bh_error_ "File '${zipfile}' does not exist."
+  exit 1
+fi
+
+# Main Function
+repair_zip() {
+  local input_file="${1}"
+  local forcezip="${2:-0}"
+  local force7zz="${3:-0}"
+  local forceditto="${4:-0}"
+  local forcejar="${5:-0}"
+
+  local output_file="${input_file%.*}_fixed.zip"
+  local recovery_dir="${input_file%.*}_recovered"
+  local ditto_dir="${input_file%.*}_ditto"
+  local jar_dir="${input_file%.*}_jar"
+
+  echo "Attempting deep repair on '${input_file}'..."
+
+  # 1. Info-ZIP Recovery
+  if (( forcezip == 1 )) || read -q "choice?Attempt recovery extraction with zip? (y/n) " ; then
+    _bh_normal_ ""
+    _bh_normal_ "Running Zip recovery (extracting to '${output_file}')..."
+
+    if zip -FF "${input_file}" --out "${output_file}" ; then
+      _bh_success_ "Repair successful. Created '${output_file}'"
+    else
+      _bh_warning_ "'zip' repair failed."
+    fi
+  else
+    _bh_normal_ ""
+    _bh_normal_ "Skipping Zip recovery."
+  fi
+
+  # 2. 7-Zip Recovery
+  if (( force7zz == 1 )) || read -q "choice?Attempt recovery extraction with 7-Zip? (y/n) " ; then
+    _bh_normal_ ""
+    _bh_normal_ "Running 7-Zip recovery (extracting to '${recovery_dir}')..."
+
+    if 7zz x "${input_file}" -o"${recovery_dir}" ; then
+      _bh_success_ "Recovery successful. Files extracted to '${recovery_dir}'/"
+    else
+      _bh_error_ "7-Zip recovery failed."
+    fi
+  else
+    _bh_normal_ ""
+    _bh_normal_ "Skipping 7-Zip recovery."
+  fi
+
+  # 3. macOS 'ditto' Recovery
+  if (( forceditto == 1 )) || read -q "choice?Attempt recovery with macOS 'ditto'? (y/n) " ; then
+    _bh_normal_ ""
+    _bh_normal_ "Running 'ditto' extraction to '${ditto_dir}'..."
+    mkdir -p "${ditto_dir}"
+
+    if ditto -x -k "${input_file}" "${ditto_dir}" 2>/dev/null ; then
+      _bh_success_ "Recovery successful. Files extracted to '${ditto_dir}'/"
+    else
+      _bh_error_ "'ditto' recovery failed."
+    fi
+  else
+    _bh_normal_ ""
+    _bh_normal_ "Skipping ditto recovery."
+  fi
+
+  # 4. Java 'jar' Recovery
+  if (( forcejar == 1 )) || read -q "choice?Attempt recovery with Java 'jar'? (y/n) " ; then
+    _bh_normal_ ""
+    _bh_normal_ "Running 'jar' extraction to '${jar_dir}'..."
+    mkdir -p "${jar_dir}"
+
+    # jar extracts to current directory, so we must subshell
+    (
+      cd "${jar_dir}" || return 1
+      if jar xf "../${input_file}" ; then
+        if [[ -n "$(ls -A .)" ]]; then
+          return 0
+        else
+          return 1
+        fi
+      else
+        return 1
+      fi
+    )
+
+    # Check exit code of subshell
+    if (( ${?} == 0 )); then
+      _bh_success_ "Recovery successful. Files extracted to '${jar_dir}'/"
+    else
+      _bh_error_ "'jar' recovery failed."
+    fi
+  else
+    _bh_normal_ ""
+    _bh_normal_ "Skipping jar recovery."
+  fi
+
+  return 1
+}
+
+# Main Execution
+# Passing arguments exactly as parsed
+if ! repair_zip "${zipfile}" "${zipfix}" "${sevenfix}" "${dittofix}" "${jarfix}" ; then
+  _bh_error_ "Unsuccessful recovery."
+  exit 1
+fi
+
+exit 0

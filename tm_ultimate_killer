@@ -1,0 +1,156 @@
+#!/usr/bin/env zsh
+
+# ==============================================================================
+# ULTIMATE HUNTER-KILLER
+# Automates the cleanup of stuck Time Machine snapshots based on T2M2 logs.
+# SMART MODE: Uses "Time Gap Detection" to identify the full cluster of
+# errors from the most recent run, regardless of how long the run took.
+# COMPATIBILITY: Forces usage of macOS system binaries for date/tail to
+# avoid conflicts with GNU Coreutils (glib) in PATH.
+# ==============================================================================
+
+# 1. Configuration
+volume="/Volumes/X9ProSSD"
+logfile="${1}"
+gap_threshold=300  # 5 minutes (in seconds). Errors further apart than this are separate runs.
+
+# Explicitly define system binaries to bypass GNU Coreutils in user PATH
+system_tail="/usr/bin/tail"
+system_date="/bin/date"
+
+if [[ -z "${logfile}" ]]; then
+  echo "❌ Usage: ./ultimate_hunter_killer.zsh <path_to_T2M2_log_file>"
+  exit 1
+fi
+if [[ ! -f "${logfile}" ]]; then
+  echo "❌ Log file not found: ${logfile}"
+  exit 1
+fi
+
+echo "🔍 Parsing log file: ${logfile}..."
+
+# 2. Isolate the last report block
+# Find the LAST occurrence of "errors reported:" to ignore old appended logs
+start_line=$(grep -n "errors reported:" "${logfile}" | ${system_tail} -n 1 | cut -d: -f1)
+
+if [[ -z "${start_line}" ]]; then
+  echo "✅ No error summary header found. You are clean!"
+  exit 0
+fi
+
+echo "📉 Found error summary at line ${start_line}. Reading..."
+
+# Extract raw lines with timestamps (YYYY-MM-DD HH:MM:SS)
+# We reverse the order using system_tail -r because GNU tail does not support -r
+error_lines=$(${system_tail} -n +${start_line} "${logfile}" | grep "afpAccessDenied" | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}" | ${system_tail} -r)
+
+if [[ -z "${error_lines}" ]]; then
+  echo "✅ No errors found in the block."
+  exit 0
+fi
+
+# 3. Gap detection algorithm
+echo "🧠 Analyzing time gaps to isolate the latest run..."
+
+target_lines=()
+last_epoch=0
+
+# Read line by line (Newest -> Oldest)
+while IFS= read -r line ; do
+  # Extract timestamp string (first 19 chars: YYYY-MM-DD HH:MM:SS)
+  ts_str=$(echo "${line}" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}')
+
+  # Convert to Epoch seconds (macOS compatible)
+  # Using system_date to ensure BSD syntax (-j -f) works
+  current_epoch=$(${system_date} -j -f "%Y-%m-%d %H:%M:%S" "${ts_str}" "+%s" 2>/dev/null)
+
+  if [[ -z "${current_epoch}" ]]; then
+    continue
+  fi
+
+  # Initialize with the very first (newest) item
+  if (( last_epoch == 0 )); then
+    last_epoch=${current_epoch}
+  fi
+
+  # Calculate gap
+  diff=$(( last_epoch - current_epoch ))
+
+  # Check if this error belongs to the current cluster
+  if (( diff > gap_threshold )); then
+    # Gap is too large! We hit the previous run. Stop here.
+    break
+  else
+    # Still in the same run cluster. Add to targets.
+    target_lines+=("${line}")
+    # Update last_epoch to track the cluster continuity
+    last_epoch=${current_epoch}
+  fi
+done <<< "${error_lines}"
+
+# 4. Extract snapshot targets from cluster
+# Convert array back to string, then grep
+cluster_text="${target_lines[*]}"
+targets=($(echo "${cluster_text}" | grep -oE '20(2[5-9]|[3-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[0-1])-[0-9]{6}' | sort | uniq))
+
+count=${#targets[@]}
+
+if (( count == 0 )); then
+  echo "✅ No targets found in the latest cluster."
+  exit 0
+fi
+
+echo "⚠️  Found ${count} stuck snapshots in the latest run (Gap < ${gap_threshold}s):"
+for t in ${targets} ; do
+  echo "   - ${t}"
+done
+echo ""
+echo "Press ENTER to proceed with nuclear cleanup, or Ctrl+C to cancel."
+read
+
+# 5. Prime sudo
+echo "🔑 Requesting sudo privileges..."
+sudo -v
+
+# 6. Execute the purge
+echo "🚀 Starting Purge on ${volume}..."
+
+for timestamp in ${targets} ; do
+  echo "---------------------------------------------------"
+  echo "🎯 Targeting: ${timestamp}"
+
+  # A. Kill Database Record
+  if sudo tmutil delete -d "${volume}" -t "${timestamp}" &>/dev/null ; then
+    echo "   ✅ Database record deleted."
+  else
+    echo "   ⚠️  Database delete skipped."
+  fi
+
+  # B. Kill APFS Snapshot
+  if sudo tmutil deletelocalsnapshots "${timestamp}" &>/dev/null ; then
+    echo "   ✅ APFS Snapshot deleted."
+  else
+    echo "   ⚠️  Snapshot delete skipped."
+  fi
+
+  # C. Kill Directory
+  directory="${volume}/${timestamp}.previous"
+  if [[ -d "${directory}" ]]; then
+    echo "   💥 Found stubborn directory. Nuking..."
+    sudo chflags -R nouchg "${directory}"
+    sudo chmod -RN "${directory}" 2>/dev/null
+    sudo xattr -c -r "${directory}" 2>/dev/null
+    sudo rm -rf "${directory}"
+
+    if [[ ! -d "${directory}" ]]; then
+      echo "   ✅ Directory removed."
+    else
+      echo "   ❌ Directory persists."
+    fi
+  else
+    echo "   ✅ No residual directory found."
+  fi
+done
+
+echo "---------------------------------------------------"
+echo "🎉 Ultimate Hunter-Killer Complete."

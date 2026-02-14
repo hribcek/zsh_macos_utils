@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+
+typeset -a dirs
+dirs=("${@}")
+
+if ((${#dirs} == 0)) ; then
+  dirs=("${PWD}")
+fi
+
+# input filename mask: *.{mp4,mkv,mov,avi,wmv,flv,webm,m4v,mpg,mpeg,m2ts,mts,ts,vob,ogv,3gp}
+# output csv columns: filename, size, duration, width, height, framerate
+
+for dir in "${dirs[@]}" ; do
+  for fname in "${dir}"/*.{mp4,mkv,mov,avi,wmv,flv,webm,m4v,mpg,mpeg,m2ts,mts,ts,vob,ogv,3gp}(N) ; do
+    ffprobe -v error -select_streams v:0 -show_entries "stream=width,height,r_frame_rate : format=filename,size,duration" -of json "${fname}" | \
+      jq '{filename: .format.filename, size: (.format.size|tonumber), duration: (.format.duration|tonumber|round), width: .streams[0].width, height: .streams[0].height, framerate: (.streams[0].r_frame_rate | split("/") as $parts | ($parts[0] | tonumber) / ($parts[1] | tonumber) | (. * 100 | round) / 100)}'
+  done
+done | \
+  jq -s . | \
+  jq -r '(.[0] | keys_unsorted) as $cols | map(. as $row | $cols | map($row[.])) as $rows | $cols, $rows[] | @csv'

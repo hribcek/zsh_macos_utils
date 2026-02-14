@@ -1,0 +1,122 @@
+#!/usr/bin/env zsh
+
+# Default to loose mode
+strict_mode=0
+
+# Parse arguments
+for arg in "${@}" ; do
+  if [[ "${arg}" == "--strict" ]]; then
+    strict_mode=1
+    break
+  fi
+done
+
+# 1. Elevate privileges upfront
+sudo -v
+
+# Outputing mode of execution
+if (( strict_mode == 1 )); then
+  echo "Checking WindowServer logging configuration (Strict Mode)..."
+else
+  echo "Checking WindowServer logging configuration (Standard Mode)..."
+fi
+
+# --- Configuration ---
+check_component() {
+  local name="${1}"
+  local cmd_type="${2}"
+  local target="${3}"
+  local status_output
+
+  if [[ -z "${name}" || -z "${cmd_type}" || -z "${target}" ]]; then
+    echo "⚠️  WARNING: Incorrect call to check_component()."
+    return 0
+  fi
+
+  # Get current status
+  status_output=$(sudo log config "${cmd_type}" "${target}" --status 2>/dev/null)
+
+  # Logic Switch based on mode
+  if (( strict_mode == 1 )); then
+    # STRICT: Must be explicitly "OFF"
+    # Match either "level:off" (command syntax) OR "OFF" (status output)
+    if [[ ! "${status_output}" =~ "level:off" && ! "${status_output}" =~ "OFF" ]]; then
+      echo "❌ DRIFT DETECTED (Strict): ${name}"
+      echo "   Current Status: ${status_output}"
+      return 1
+    fi
+  else
+    # STANDARD: Fail only if explicitly noisy (INFO/DEBUG)
+    if [[ "${status_output}" =~ "INFO" || "${status_output}" =~ "DEBUG" ]]; then
+      echo "❌ DRIFT DETECTED: ${name}"
+      echo "   Current Status: ${status_output}"
+      return 1
+    fi
+  fi
+
+  echo "✅ ${name} is Healthy (${status_output})"
+  return 0
+}
+
+# 2. Execution
+
+# Run Checks (Multi-line IF chain)
+if check_component "CoreDisplay" "--subsystem" "com.apple.CoreDisplay" && \
+    check_component "IOHID" "--subsystem" "com.apple.iohid" && \
+    check_component "SkyLight" "--subsystem" "com.apple.SkyLight" && \
+    check_component "WindowServer (Process)" "--process" "WindowServer" ; then
+  echo "-----------------------------------------------------"
+  echo "System is healthy. No log thrashing detected."
+else
+  # 3. Found the noise
+  echo "-----------------------------------------------------"
+  if (( strict_mode == 1 )); then
+    echo "⚠️  WARNING: Components are not strictly silenced (level:off)."
+  else
+    echo "⚠️  WARNING: High-frequency logging (INFO/DEBUG) detected."
+  fi
+  echo ""
+
+  # 4. Ask user for confirmation
+  local prompt_msg="choice?Do you want to fix this now? (y/n) "
+  if (( strict_mode == 1 )); then
+    prompt_msg="choice?Do you want to ENFORCE strict silence (level:off)? (y/n) "
+  fi
+
+  # 5. Read user input
+  if read -q "${prompt_msg}" ; then
+    echo ""
+    echo "Applying fixes..."
+
+    if (( strict_mode == 1 )); then
+      # STRICT FIX: Force level:off on Subsystems AND the main Process
+      sudo log config --subsystem com.apple.CoreDisplay --mode level:off
+      sudo log config --subsystem com.apple.iohid --mode level:off
+      sudo log config --subsystem com.apple.SkyLight --mode level:off
+      sudo log config --process WindowServer --mode level:off
+
+      echo "Strict silence applied (level:off)."
+    else
+      # STANDARD FIX: Reset to default
+      sudo log config --subsystem com.apple.CoreDisplay --mode level:default,persist:default
+      sudo log config --subsystem com.apple.iohid --mode level:default,persist:default
+      sudo log config --subsystem com.apple.SkyLight --mode level:default,persist:default
+      sudo log config --process WindowServer --mode level:default,persist:default
+
+      echo "Standard reset applied (level:default)."
+    fi
+
+    echo "Waiting for 10s to verify..."
+    sleep 10
+
+    # 6. Quick verify
+    local verify_ws
+    verify_ws=$(sudo log config "--process" "WindowServer" --status 2>/dev/null)
+
+    echo "Current Status (WindowServer Process): ${verify_ws}"
+
+  else
+    echo ""
+    echo "No action taken."
+  fi
+fi

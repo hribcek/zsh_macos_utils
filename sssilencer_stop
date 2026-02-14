@@ -1,0 +1,12 @@
+#!/usr/bin/env zsh
+
+# Get the PID of the running SSWatcher
+PID=$(pgrep SSWatcher)
+
+# Tell the logging system to downgrade this specific Process ID to "Off"
+if [[ -n "${PID}" ]]; then
+  sudo log config --process "${PID}" --mode "level:off"
+  echo "✅ Muted Process ID ${PID}, check in about 30 secs..."
+else
+  echo "⚠️ SSWatcher is not running."
+fi

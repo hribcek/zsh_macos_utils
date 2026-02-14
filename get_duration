@@ -1,0 +1,128 @@
+#!/usr/bin/env zsh
+
+# Dependencies: zmodload zsh/datetime
+
+zmodload zsh/datetime
+
+_get_duration() {
+  local startEpoch="${1}"
+  local units="${2}"
+
+  local diff
+  (( diff = EPOCHSECONDS - startEpoch ))
+
+  if (( diff < 0 )); then
+    diff=0
+  fi
+
+  local -A divisors=(
+    d 86400
+    h 3600
+    m 60
+    s 1
+  )
+
+  # Create "decorated" list of "value:key"
+  local -a items
+  for key in "${(@k)divisors}" ; do
+    items+=( "${divisors[${key}]}:${key}" )
+  done
+
+  # Sort the list (by values)
+  local sortedItems=( "${(@On)items}" )
+
+  # "Undecorate" (to get keys back)
+  local sortedKeys=( "${(@)sortedItems#*:}" )
+
+  # Now find candidates and map the input parameter
+  local targetUnit=""
+  local -a candidates=()
+  local unitChar
+
+  # Filter requested units maintaining the sorted hierarchy
+  for unitChar in "${sortedKeys[@]}" ; do
+    if [[ "${units}" == *"${unitChar}"* ]]; then
+      candidates+=( "${unitChar}" )
+    fi
+  done
+
+  # Dynamic Validation: Join keys to create regex pattern (e.g., "dhms")
+  local validKeys="${(j::)sortedKeys}"
+  local invalidUnits="${units//[${validKeys}]/}"
+
+  # Logic Branching
+  if [[ -z "${units}" || -n "${invalidUnits}" ]] || (( ${#candidates} == ${#divisors} )); then
+
+    # Auto-Detect Logic: Iterate through sorted keys (d -> h -> m -> s)
+    for unitChar in "${sortedKeys[@]}" ; do
+      # If diff is larger than the unit's divisor, pick it
+      if (( diff >= divisors[${unitChar}] )); then
+        targetUnit="${unitChar}"
+        break
+      fi
+    done
+
+    # Fallback to smallest unit (last in sorted list) if strict 0
+    if [[ -z "${targetUnit}" ]]; then
+      targetUnit="${sortedKeys[-1]}"
+    fi
+
+  else
+    # Custom Set Logic
+    local candidate
+    local divCheck
+    local foundUnit=0
+
+    for candidate in "${candidates[@]}" ; do
+      divCheck="${divisors[${candidate}]}"
+
+      # Floor Check: Is the result > 0?
+      if (( (diff / divCheck) > 0 )); then
+        targetUnit="${candidate}"
+        foundUnit=1
+        break
+      fi
+    done
+
+    if (( ! foundUnit )); then
+      targetUnit="${candidates[-1]}"
+    fi
+  fi
+
+  local finalDivisor="${divisors[${targetUnit}]}"
+  local val
+
+  # Universal Ceiling Formula: (numerator + denominator - 1) / denominator
+  (( val = (diff + finalDivisor - 1) / finalDivisor ))
+
+  echo "${val}${targetUnit}"
+}
+
+# --- MAIN ---
+arg1="${1}"
+arg2="${2}"
+
+# Check if 1st parameter has been passed (or -h or --help)
+if [[ -z "${arg1}" || "${arg1}" = "-h" || "${arg1}" = "--help" ]]; then
+  cat <<ENDOFUSAGE
+Usage: ${0:t} <start_datetime> [units]
+
+  Arguments:
+    start_datetime  Format: 'YYYY-MM-DD HH:MM:SS'
+    units           (Optional) Sets the allowed units for display.
+                    - [Empty]: Auto-select best unit.
+                    - [Contains Invalid]: Auto-select best unit.
+                    - [All units]: Auto-select best unit.
+                    - [Chars]: A specific set of allowed units.
+                               Prioritizes larger units if non-zero.
+ENDOFUSAGE
+  exit 1
+fi
+
+# Check if 1st parameter is correctly formatted datetime
+if ! strftime -r -s startEpoch "%Y-%m-%d %H:%M:%S" "${arg1}" ; then
+  echo "Error: Invalid datetime format. Use 'YYYY-MM-DD HH:MM:SS'"
+  exit 1
+fi
+
+_get_duration "${startEpoch}" "${arg2}"

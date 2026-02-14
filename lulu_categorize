@@ -1,0 +1,126 @@
+#!/usr/bin/env zsh
+
+input_json="${1:-lulu-rules.json}"
+if [[ ! -f "${input_json}" ]]; then
+  echo "Missing input file ${input_json}"
+  exit 1
+fi
+
+echo "Will read ${input_json}"
+
+output_organized_json="${input_json%.*}-organized.${input_json##*.}"
+output_tocategorize_json="${input_json%.*}-tocategorize.${input_json##*.}"
+
+jq '
+def clean: sub("^((Game|Apple|Setapp|Google|Dropbox|1Password|Dev|Microsoft|SHPO|Security|Util|Chat|Media|VPN|Logitech|PDF|Mail|RenPy): )+"; "");
+
+with_entries(
+  # 1. Games
+  if (((.value[0].path // "") | startswith("/Volumes/NewGamez/")) or
+      (.key | startswith("com.valvesoftware.steam"))) then
+      .value |= map(.name |= "Game: " + clean)
+
+  # 2. Apple System components
+  elif (.key | startswith("com.apple.")) then
+      .value |= map(.name |= "Apple: " + clean)
+
+  # 3. Setapp
+  elif ((.key | contains("-setapp")) or
+        (.key | startswith("com.setapp."))) then
+      .value |= map(.name |= "Setapp: " + clean)
+
+  # 4. Google
+  elif (.key | startswith("com.google.")) then
+      .value |= map(.name |= "Google: " + clean)
+
+  # 5. Dropbox
+  elif (.key | test("Dropbox"; "i")) then
+      .value |= map(.name |= "Dropbox: " + clean)
+
+  # 6. 1Password
+  elif (.key | startswith("com.1password.")) then
+      .value |= map(.name |= "1Password: " + clean)
+
+  # 7. RenPy
+  elif ((.key | startswith("org.renpy.")) or
+        ((.value[0].path // "") | contains("/renpy-"))) then
+      .value |= map(.name |= "RenPy: " + clean)
+
+  # 8. Development Tools
+  elif (((.value[0].path // "") | contains("/Cellar/")) or
+        ((.value[0].path // "") | contains("/.pyenv/")) or
+        ((.value[0].path // "") | contains("chrome-headless-shell")) or
+        ((.value[0].name // "") | test("^python[0-9.]*$")) or
+        (.key | startswith("com.googlecode.iterm2")) or
+        (.key | startswith("com.sublimetext")) or
+        (.key | startswith("plugin_host-")) or
+        (.key | startswith("com.microsoft.VSCode")) or
+        (.key | startswith("vsce-"))) then
+      .value |= map(.name |= "Dev: " + clean)
+
+  # 9. Microsoft
+  elif (.key | startswith("com.microsoft.")) then
+      .value |= map(.name |= "Microsoft: " + clean)
+
+  # 10. SHPO
+  elif ((.key | test("esafe"; "i")) or
+        ((.value[0].path // "") | contains("/e-safe/"))) then
+      .value |= map(.name |= "SHPO: " + clean)
+
+  # 11. Security Tools
+  elif (.key | startswith("com.objective-see.")) then
+      .value |= map(.name |= "Security: " + clean)
+
+  # 12. Utilities
+  elif ((.key | startswith("co.eclecticlight.")) or
+        (.key | startswith("com.macpaw.site.theunarchiver")) or
+        (.key | startswith("com.runningwithcrayons.Alfred")) or
+        (.key | startswith("com.knollsoft.Rectangle")) or
+        ((.value[0].path // "") | contains("/Rectangle.app")) or
+        (.key | startswith("org.hammerspoon.")) or
+        (.key | startswith("com.bjango.istatmenus"))) then
+      .value |= map(.name |= "Util: " + clean)
+
+  # 13. Chat
+  elif (.key | startswith("net.whatsapp.")) then
+      .value |= map(.name |= "Chat: " + clean)
+
+  # 14. Media
+  elif ((.key | startswith("com.spotify.")) or
+        (.key | startswith("org.videolan.")) or
+        (.key | startswith("org.m0k.transmission")) or
+        (.key | startswith("com.smartcodeltd.stremio")) or
+        (.key | startswith("fr.handbrake.")) or
+        ((.value[0].path // "") | contains("/Stremio.app/")) or
+        ((.value[0].path // "") | contains("HandBrake.app"))) then
+      .value |= map(.name |= "Media: " + clean)
+
+  # 15. VPNs
+  elif (.key | startswith("com.nordvpn.")) then
+      .value |= map(.name |= "VPN: " + clean)
+
+  # 16. Logitech
+  elif (.key | startswith("com.logi.")) then
+      .value |= map(.name |= "Logitech: " + clean)
+
+  # 17. PDF Tools
+  elif ((.key | startswith("com.foxit-software.")) or
+        ((.value[0].path // "") | contains("Foxit PDF Reader"))) then
+      .value |= map(.name |= "PDF: " + clean)
+
+  # 18. Mail
+  elif (.key | startswith("io.canarymail.")) then
+      .value |= map(.name |= "Mail: " + clean)
+
+  # Default
+  else
+      .
+  end
+)' "${input_json}" > "${output_organized_json}"
+
+echo "Result in ${output_organized_json}"
+
+# Identify items that still don't have a known category prefix
+jq 'to_entries | map(select((.value[0].name // "") | test("^[A-Za-z0-9]+: ") | not)) | from_entries' "${output_organized_json}" > "${output_tocategorize_json}"
+
+echo "Still to categorize in ${output_tocategorize_json}"

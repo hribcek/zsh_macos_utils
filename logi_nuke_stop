@@ -1,0 +1,39 @@
+#!/usr/bin/env zsh
+
+# Configuration
+subsystem="xyz.hribar.nukelogi"
+util="ServiceStop"
+
+# Our own logging utility
+LOG_BIN="/usr/local/bin/nukelog"
+
+# --- FUNCTION: Log Event ---
+log_event() {
+  local msg="${1}"
+  local timestamp
+
+  # 1. Get the timestamp
+  if (( $+commands[gdate] )); then
+    timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  else
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  fi
+
+  # 2. Print to standard out (for debug/console logs)
+  echo "[${timestamp}] ${subsystem} ${util:-Service} [PPID:${$}] ${msg}"
+
+  # 3. Call the logging utility
+  if [[ -x "${LOG_BIN}" ]]; then
+    "${LOG_BIN}" "${subsystem}" "${util:-Service}" "[PPID:${$}] ${msg}"
+  fi
+}
+
+# --- MAIN EXECUTION ---
+# 1. Ask for password upfront
+sudo -v
+
+# 2. Stopping service
+log_event "Stopping service '${subsystem}'..."
+sudo launchctl bootout system/${subsystem} 2>/dev/null || true
+
+log_event "✅ Done."

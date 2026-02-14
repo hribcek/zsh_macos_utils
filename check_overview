@@ -1,0 +1,28 @@
+#!/usr/bin/env zsh
+
+since="boot"
+# Parse arguments
+for arg in "${@}" ; do
+  if [[ "${arg}" =~ ^([1-9]|[1-9][0-9])([dhm])$ ]]; then
+    since="${arg}"
+  fi
+done
+
+echo "📊 Generating CLEAN 'Processes' leaderboard (Since ${since})..."
+echo "-----------------------------------------------------------"
+echo -n "Gathering information...\r"
+
+# 1. sudo log stats:
+#    --overview: The report mode
+#    --last ${since}: Limits range to current uptime (boot) or last ${since}
+#    --no-pager: dumps text to stdout (essential for scripts)
+#    --style human: ensures readable formatting
+#
+# 2. awk: Extracts ONLY the block between 'processes:' and 'senders:'
+#
+# 3. grep: Filters for lines starting with '[' (the data rows)
+#
+# 4. head: Shows only the top 50 (since output is pre-sorted by count)
+
+sudo log stats --overview --last ${since} --no-pager --style human --count 50 --sort events \
+  | awk '/^processes:/{flag=1; next} /^senders:/{flag=0} flag && NF'

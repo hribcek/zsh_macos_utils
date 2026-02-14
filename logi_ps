@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+
+targets=(
+  "LogiPluginService"
+  "LogiPluginServiceNative"
+  "LogiPluginServiceExt"
+  "logioptionsplus_agent"
+  "logioptionsplus_updater"
+  "com.logitech.LogiRightSight"
+)
+
+
+for target in "${targets[@]}" ; do
+  echo "Searching for \"${target}\"..."
+  pids=($(pgrep -f ${target}))
+  if (( ${#pids} > 0 )); then
+    echo "Found with pgrep, now list with ps..."
+    ps -p ${(j:,:)pids}
+  fi
+done

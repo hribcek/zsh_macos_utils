@@ -1,0 +1,16 @@
+#!/usr/bin/env zsh
+
+# 1. Define the target directory based on your logs
+target_dir="/Library/Application Support/Logitech.localized/LogiRightSightForWebcams"
+
+# 2. Nuke the existing directory (and the app inside it)
+sudo rm -rf "${target_dir}"
+
+# 3. Create a dummy file in its place (so a directory cannot be created there)
+sudo touch "${target_dir}"
+
+# 4. Lock the file with the "Immutable" flag (User Immutable + System Immutable)
+sudo chflags uchg,schg "${target_dir}"
+
+# 5. Verify it looks right
+/bin/ls -lO "${target_dir}"

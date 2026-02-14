@@ -1,0 +1,152 @@
+#!/usr/bin/env zsh
+
+# Defaults
+filter_arg="1d"
+sort_opt=""
+header_arrow="▲"
+
+current_ts=$(/bin/date +%s)
+cutoff_ts=0
+
+# Parse arguments
+for arg in "${@}" ; do
+  if [[ "${arg}" == "-r" ]]; then
+    sort_opt="-r"
+    header_arrow="▼"
+  elif [[ "${arg}" == "boot" ]]; then
+    filter_arg="boot"
+  elif [[ "${arg}" =~ ^([1-9]|[1-9][0-9])([dhm])$ ]]; then
+    filter_arg="${arg}"
+  fi
+done
+
+# Calculate cutoff timestamp based on the determined filter_arg
+if [[ "${filter_arg}" == "boot" ]]; then
+  # Extract boot time from sysctl
+  boot_sec=$(sysctl -n kern.boottime | awk -F 'sec = ' '{print $2}' | awk -F ',' '{print $1}')
+  cutoff_ts="${boot_sec}"
+  echo "Showing crashes since boot: $(/bin/date -r "${cutoff_ts}" "+%Y-%m-%d %H:%M:%S")"
+else
+  # Regex match for Number (1-99) + Unit (d/h/m)
+  if [[ "${filter_arg}" =~ ^([1-9]|[1-9][0-9])([dhm])$ ]]; then
+    val="${match[1]}"
+    unit="${match[2]}"
+    offset=0
+
+    if [[ "${unit}" == "d" ]]; then
+      offset=$(( val * 86400 ))
+    elif [[ "${unit}" == "h" ]]; then
+      offset=$(( val * 3600 ))
+    elif [[ "${unit}" == "m" ]]; then
+      offset=$(( val * 60 ))
+    fi
+
+    cutoff_ts=$(( current_ts - offset ))
+    echo "Showing crashes from the last ${filter_arg} (since $(/bin/date -r "${cutoff_ts}" "+%Y-%m-%d %H:%M:%S"))"
+  else
+    echo "Invalid time duration: ${filter_arg}. Use format like 1d, 6h, 30m (max 99), or 'boot'."
+    exit 1
+  fi
+fi
+
+# Define search directories as Associative Array (Key=Origin, Value=Path)
+typeset -A search_dirs
+search_dirs=(
+  "U" "${HOME}/Library/Logs/DiagnosticReports"
+  "S" "/Library/Logs/DiagnosticReports"
+)
+
+# Header for the output
+# DATE: 22 chars, PROCESS: 30 chars, EXCEPTION: 40 chars
+printf "%-22s | %-30s | %-40s | %s\n" "DATE/TIME ${header_arrow}" "PROCESS" "EXCEPTION" "FILE (U/S)"
+echo "-----------------------|--------------------------------|------------------------------------------|--------------------------------"
+
+# Loop through associative array keys and values
+for origin dir in "${(@kv)search_dirs}" ; do
+  if [[ -d "${dir}" ]]; then
+    for filepath in "${dir}"/*.{ips,crash}(N) ; do
+
+      filename="${filepath:t}"
+      ext="${filename##*.}"
+
+      crash_date=""
+      process_name=""
+      exception_type=""
+
+      if [[ "${ext}" == "ips" ]]; then
+        # Handle modern JSON crash reports (.ips)
+        read -r header < "${filepath}"
+        # Strip potential text prefixes
+        header=$(echo "${header}" | sed -E 's/^.*\{/\{/; s/\}.*$/\}/')
+
+        if [[ "${header}" == \{* ]]; then
+          crash_date=$(echo "${header}" | jq -r '.timestamp // empty' | cut -d'.' -f1 | tr 'T' ' ')
+          process_name=$(echo "${header}" | jq -r '.app_name // .procName // empty')
+          exception_type=$(echo "${header}" | jq -r '.exception.type // empty')
+        fi
+
+        # Fallback extraction
+        if [[ -z "${crash_date}" ]]; then
+          crash_date=$(grep -a -m1 '"timestamp"' "${filepath}" | sed -E 's/.*"timestamp":"([^"]+)".*/\1/' | cut -d'.' -f1 | tr 'T' ' ')
+        fi
+
+        if [[ -z "${process_name}" ]]; then
+          process_name=$(grep -a -m1 '"app_name"' "${filepath}" | sed -E 's/.*"app_name":"([^"]+)".*/\1/')
+          if [[ -z "${process_name}" ]]; then
+            process_name=$(grep -a -m1 '"procName"' "${filepath}" | sed -E 's/.*"procName":"([^"]+)".*/\1/')
+          fi
+        fi
+
+        if [[ -z "${exception_type}" ]]; then
+          exception_type=$(grep -a -m1 '"signal"' "${filepath}" | sed -E 's/.*"signal":"([^"]+)".*/\1/')
+        fi
+
+      elif [[ "${ext}" == "crash" ]]; then
+        # Handle legacy text crash reports (.crash)
+        crash_date=$(grep -a -m1 "^Date/Time:" "${filepath}" | awk '{$1=$1; print}' | cut -d' ' -f2-3)
+        process_name=$(grep -a -m1 "^Process:" "${filepath}" | awk '{print $2}')
+        exception_type=$(grep -a -m1 "^Exception Type:" "${filepath}" | awk '{print $3}')
+      fi
+
+      # Guess date from filename if missing
+      if [[ -z "${crash_date}" ]]; then
+        if [[ "${filename}" =~ (20(2[5-9]|[3-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[0-1])-[0-9]{6}) ]]; then
+          date_part="${match[1]}"
+          crash_date=$(echo "${date_part}" | sed -E 's/(20(2[5-9]|[3-9][0-9]))-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[0-1])-([0-9]{2})([0-9]{2})([0-9]{2})/\1-\3-\4 \5:\6:\7/')
+        fi
+      fi
+
+      # --- FILTER LOGIC ---
+      if [[ -n "${crash_date}" && "${crash_date}" != "Unknown" ]]; then
+        item_ts=$(/bin/date -j -f "%Y-%m-%d %H:%M:%S" "${crash_date}" +%s 2>/dev/null)
+
+        # Use short-circuit logic: If item_ts is empty, we stop (skip).
+        # If it has a value, we proceed to the arithmetic comparison.
+        if [[ -z "${item_ts}" ]] || (( item_ts < cutoff_ts )); then
+          continue
+        fi
+      else
+        continue
+      fi
+
+      # Default values
+      if [[ -z "${process_name}" ]]; then
+        process_name="Unknown"
+      fi
+
+      if [[ -z "${exception_type}" ]]; then
+        exception_type="-"
+      fi
+
+      # Pass 'origin' as a new column in the tab-delimited stream
+      printf "%s\t%s\t%s\t%s\t%s\n" "${crash_date}" "${process_name}" "${exception_type}" "${origin}" "${filepath}"
+    done
+  fi
+done | sort ${sort_opt} | while IFS=$'\t' read -r crashdate crashproc crashexc crashorigin crashpath ; do
+
+  # Truncate columns to ensure table alignment
+  crashproc_display="${crashproc[1,30]}"
+  crashexc_display="${crashexc[1,40]}"
+
+  printf "%-22s | %-30s | %-40s | (%s) %s\n" "${crashdate}" "${crashproc_display}" "${crashexc_display}" "${crashorigin}" "${crashpath:t}"
+done

@@ -1,0 +1,100 @@
+#!/usr/bin/env zsh
+
+# Configuration
+subsystem="xyz.hribar.nukelogi"
+plist_loc="/Library/LaunchDaemons/${subsystem}.plist"
+util="ServiceRestart"
+
+# Valid modes and modes from parameter
+modes=(silent alert cleanup secure)
+mode="${1:-alert}"
+
+# Our own logging utility
+LOG_BIN="/usr/local/bin/nukelog"
+
+# --- FUNCTION: Log Event ---
+log_event() {
+  local msg="${1}"
+  local timestamp
+
+  # 1. Get the timestamp
+  if (( $+commands[gdate] )); then
+    timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  else
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  fi
+
+  # 2. Print to standard out (for debug/console logs)
+  echo "[${timestamp}] ${subsystem} ${util:-Service} [PPID:${$}] ${msg}"
+
+  # 3. Call the logging utility
+  if [[ -x "${LOG_BIN}" ]]; then
+    "${LOG_BIN}" "${subsystem}" "${util:-Service}" "[PPID:${$}] ${msg}"
+  fi
+}
+
+# 0.1 Check mode validity using Zsh reverse subscripting
+if [[ ! -n "${modes[(r)${mode}]}" ]]; then
+  log_event "❌ Error: Incorrect mode specified: '${mode}'. Supported: ${modes[*]}"
+  exit 1
+fi
+
+# 0.2 Check plist existence
+if [[ ! -f "${plist_loc}" ]]; then
+  log_event "❌ Error: Missing configuration \"${plist_loc}\"."
+  exit 1
+fi
+
+# --- MAIN EXECUTION ---
+# 1. Ask for password upfront (refreshes sudo timestamp)
+sudo -v
+
+# 2. Unload the service
+log_event "Stopping service '${subsystem}'..."
+sudo launchctl bootout system/${subsystem} 2>/dev/null || true
+log_event "Service '${subsystem} stopped, now waiting for 2 seconds..."
+sleep 2
+
+# 3. Replace the new mode in plist file
+log_event "Amending service '${subsystem}' startup parameters..."
+# 3.1. Capture output
+if ! pattern=$(grep -n -E "<string>(${(j:|:)modes})</string>" "${plist_loc}") ; then
+  log_event "❌ Error: Could not find configuration key in '${plist_loc}'."
+  exit 1
+fi
+
+# 3.2. Check for ambiguous matches
+match_count=$(echo "${pattern}" | wc -l)
+if (( match_count > 1 )); then
+  log_event "❌ Error: Ambiguous match. Found ${match_count} occurrences of pattern. Aborting."
+  exit 1
+fi
+
+# 3.3. Extract line number
+line_no=$(echo "${pattern}" | cut -d: -f1)
+
+# 3.4. Validate integer (Switched 'return' to 'exit' for standalone script)
+if [[ ! "${line_no}" =~ ^[0-9]+$ ]]; then
+  log_event "❌ Error: Invalid line number extracted: '${line_no}'."
+  exit 1
+fi
+
+# 3.5. Run sed with sudo
+log_event "Updating mode to '${mode}' for service '${subsystem}'..."
+sudo sed -i -E "${line_no}s#<string>(${(j:|:)modes})</string>#<string>${mode}</string>#" "${plist_loc}"
+
+# 4. Bootstrap (Load) the service
+log_event "Loading service '${subsystem}'..."
+if ! sudo launchctl bootstrap system "${plist_loc}" ; then
+  log_event "❌ Error: Failed to bootstrap service '${subsystem}' from '${plist_loc}'."
+  exit 1
+fi
+
+# 5. Kickstart (Force restart/run)
+log_event "Kickstarting service '${subsystem}'..."
+if ! sudo launchctl kickstart -k system/${subsystem} ; then
+  log_event "❌ Error: Failed to kickstart service '${subsystem}'."
+  exit 1
+fi
+
+log_event "✅ Done."

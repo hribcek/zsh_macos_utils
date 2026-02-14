@@ -1,0 +1,27 @@
+#!/usr/bin/env zsh
+
+sudo ps -ef | grep -E 'LogiPluginService|LogiPluginServiceNative|LogiPluginServiceExt|logioptionsplus_agent|logioptionsplus_updater'
+
+setopt +o nomatch
+
+ls -l /Applications/Utilities/LogiPluginService.app
+ls -l /Applications/logioptionsplus.app
+
+ls -l /Library/Application\ Support/Logi
+ls -l /Library/Application\ Support/Logitech.localized
+
+
+ls -l /Library/LaunchDaemons/com.logi.*
+ls -l /Library/LaunchAgents/com.logi.*
+ls -l /Library/LaunchAgents/com.logitech.*
+ls -l ~/Library/LaunchAgents/com.logi.*
+ls -l ~/Library/LaunchAgents/com.logitech.*
+
+
+ls -l ~/Library/Application\ Support/LogiOptionsPlus
+ls -l ~/Library/Preferences/com.logi.*
+ls -l ~/Library/Preferences/com.logitech.*
+ls -l ~/Library/Caches/com.logi.*
+ls -l ~/Library/Caches/com.logitech.*
+ls -l "/Users/Shared/LogiOptionsPlus"
+

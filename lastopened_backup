@@ -1,0 +1,108 @@
+#!/usr/bin/env zsh
+
+# --- DEPENDENCIES ---
+# Requires 'coreutils' (for gdate): brew install coreutils
+# --------------------
+
+logMsg() {
+  local msg="${1}"
+  local timestamp
+  timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  echo "[${timestamp}] ${msg}"
+}
+
+# --- CONFIGURATION ---
+targetDir="${PWD}"
+cleanMode=0
+
+for arg in "${@}" ; do
+  if [[ "${arg}" == "--clean" ]]; then
+    cleanMode=1
+  elif [[ "${arg}" != -* ]]; then
+    targetDir="${arg}"
+  fi
+done
+# ---------------------
+
+# 1. Prepare Paths
+backupRoot="${HOME}/.attrbackup"
+if [[ ! -d "${backupRoot}" ]]; then
+  mkdir -p "${backupRoot}"
+fi
+
+targetDir="${targetDir%/}"
+sanitizedName="${targetDir//\//}"
+backupFile="${backupRoot}/${sanitizedName}.mdbackup"
+lockFile="${backupFile}.lock"
+
+if [[ ! -d "${targetDir}" ]]; then
+  logMsg "Error: Directory not found at ${targetDir}"
+  exit 1
+fi
+
+# --- LOCKING MECHANISM ---
+lockAcquired=0
+
+cleanup() {
+  # Check if we own the lock AND if the lock directory actually exists
+  if (( lockAcquired )) && [[ -d "${lockFile}" ]]; then
+    rmdir "${lockFile}" 2>/dev/null
+  fi
+}
+# Fix for Ctrl+C:
+# 1. Trap EXIT to ensure cleanup always runs when the script ends.
+# 2. Trap INT/TERM to explicitly exit, which triggers the EXIT trap.
+trap cleanup EXIT
+trap "exit 1" INT TERM
+
+lockRetries=50
+lockSleep=0.1
+
+acquireLock() {
+  local retries=${lockRetries}
+  while (( retries > 0 )); do
+    if mkdir "${lockFile}" 2>/dev/null ; then
+      lockAcquired=1
+      return 0
+    fi
+    sleep ${lockSleep}
+    (( retries-- ))
+  done
+  return 1
+}
+
+# Acquire Lock "First time we need to write" (which is now)
+if ! acquireLock ; then
+  lockDuration=$(( lockRetries * lockSleep ))
+  logMsg "Error: Could not acquire lock for ${backupFile} after ${lockDuration} seconds."
+  exit 1
+fi
+# -------------------------
+
+# 2. Initialize File
+if (( cleanMode )); then
+  logMsg "Clean mode enabled. Overwriting ${backupFile}..."
+  echo "# Format: AppName <TAB> LastUsedDate" > "${backupFile}"
+else
+  if [[ ! -f "${backupFile}" ]]; then
+    touch "${backupFile}"
+  fi
+fi
+
+logMsg "Backing up metadata from ${targetDir} to ${backupFile}..."
+
+# 3. Process Apps
+for appPath in "${targetDir}"/*.app(N) ; do
+  lastUsed="$(mdls -name kMDItemLastUsedDate -raw "${appPath}")"
+
+  if [[ "${lastUsed}" != "(null)" && -n "${lastUsed}" ]]; then
+    logMsg "for ${appPath} - saving to com.backup.lastopened"
+    xattr -w "com.backup.lastopened" "${lastUsed}" "${appPath}"
+
+    logMsg "for ${appPath} - saving to ${backupFile}"
+    print "${appPath:t}\t${lastUsed}" >> "${backupFile}"
+  fi
+done
+
+logMsg "Backup complete."
+# Lock is released automatically by 'trap' when script exits

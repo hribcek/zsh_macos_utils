@@ -1,0 +1,136 @@
+#!/usr/bin/env zsh
+
+# --------------------------------------------------------------------------
+# CONFIGURATION - All variables/constants are in lowercase snake_case.
+# --------------------------------------------------------------------------
+
+# Services confirmed to be in the SYSTEM Database (Broad Permissions like FDA)
+system_tcc_services=(
+  "kTCCServiceSystemPolicyAllFiles"
+)
+system_tcc_db="/Library/Application Support/com.apple.TCC/TCC.db"
+system_db_label="system"
+
+# Services confirmed to be in the USER Database (Specific Folders)
+user_tcc_services=(
+  "kTCCServiceSystemPolicyDesktopFolder"
+  "kTCCServiceSystemPolicyDocumentsFolder"
+  "kTCCServiceSystemPolicyDownloadsFolder"
+  "kTCCServiceSystemPolicyRemovableVolumes"
+  "kTCCServiceSystemPolicyNetworkVolumes"
+)
+user_tcc_db="${HOME}/Library/Application Support/com.apple.TCC/TCC.db"
+user_db_label="user"
+
+# SQLite command part
+sql_cmd='SELECT service, client, client_type FROM access WHERE service IN (%s)'
+
+# Using the ASCII Unit Separator (0x1F) for reliability
+delimiter=$'\x1F'
+
+# Output header for CSV format
+# printf "database,service,client,client_type,bundle_id,path,tcc_status\n"
+
+# Function to process and verify the TCC records
+process_records() {
+  local tcc_records="${1}"
+  local db_source="${2}" # "system" or "user"
+
+  if [[ -z "${tcc_records}" ]]; then
+    return
+  fi
+
+  # Process records line by line, using the Unit Separator ($'\x1F') as the delimiter
+  echo "${tcc_records}" | while IFS="${delimiter}" read -r service client client_type; do
+
+    # Declare all variables local inside the loop and assign values immediately
+    local service="${service}" client="${client}" client_type="${client_type}"
+    local bundle_id="" final_path="" tcc_status=""
+
+    # Variables for CSV output
+    # local csv_bundle_id="N/A" csv_path="N/A" csv_client="${client}" csv_service="${service}"
+
+    # Use a case statement to clearly handle the client type (0=Bundle ID, 1=Path)
+    case "${client_type}" in
+      "1")
+        # Case 1: Client is an Absolute Path (type=1)
+        final_path="${client}"
+        if [[ -e "${final_path}" ]]; then
+          # tcc_status="FOUND"
+        else
+          # Correctly escape single quotes for shell
+          local safe_path="${client//\'/\'\"\'\"\'}"
+          printf "tccutil reset %s '%s'\n" "${service}" "${safe_path}"
+        fi
+        ;;
+      "0")
+        # Case 2: Client is a Bundle ID (type=0)
+        bundle_id="${client}"
+        final_path=$(mdfind 'kMDItemCFBundleIdentifier == "'"${bundle_id}"'"' | head -n 1)
+
+        if [[ -n "${final_path}" ]]; then
+          # tcc_status="FOUND"
+        else
+          # tcc_status="MISSING_BUNDLE_ID"
+          printf "tccutil reset %s %s\n" "${service}" "${bundle_id}"
+        fi
+        ;;
+      *)
+        # Default case for unexpected type values
+        # tcc_status="UNKNOWN_TYPE"
+        ;;
+    esac
+
+    # Handle commas in fields csv_client and csv_path by enclosing them in double quotes
+    # if [[ ${csv_client} =~ "," ]]; then
+    #   csv_client="\"${csv_client}\""
+    #   if [[ ${csv_path} =~ "," ]]; then
+    #     csv_path="\"${csv_path}\""
+    #   fi
+    # fi
+
+    # CSV output commented out
+    # printf "%s,%s,%s,%s,%s,%s,%s\n" \
+    #   "${db_source}" \
+    #   "${csv_service}" \
+    #   "${csv_client}" \
+    #   "${client_type}" \
+    #   "${csv_bundle_id}" \
+    #   "${csv_path}" \
+    #   "${tcc_status}"
+
+  done
+}
+
+
+# --------------------------------------------------------------------------
+# 1. CHECK SYSTEM DATABASE (for Broad Access)
+# --------------------------------------------------------------------------
+system_service_list=$(printf "'%s'," "${system_tcc_services[@]}" | sed 's/,$//')
+system_query=$(printf "${sql_cmd}" "${system_service_list}")
+
+temp_file="$(mktemp -t tcc_audit)"
+trap 'rm -f "${temp_file}"' EXIT
+
+# Execute privileged query and redirect output to the temp file
+sudo sqlite3 "${system_tcc_db}" <<EOF > "${temp_file}"
+.separator ${delimiter}
+${system_query}
+EOF
+
+system_records=$(<"${temp_file}")
+process_records "${system_records}" "${system_db_label}"
+
+
+# --------------------------------------------------------------------------
+# 2. CHECK USER DATABASE (for Specific Folder Access)
+# --------------------------------------------------------------------------
+user_service_list=$(printf "'%s'," "${user_tcc_services[@]}" | sed 's/,$//')
+user_query=$(printf "${sql_cmd}" "${user_service_list}")
+
+user_records=$(sqlite3 "${user_tcc_db}" <<EOF
+.separator ${delimiter}
+${user_query}
+EOF
+)
+process_records "${user_records}" "${user_db_label}"

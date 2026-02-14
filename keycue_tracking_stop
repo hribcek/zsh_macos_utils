@@ -1,0 +1,41 @@
+#!/usr/bin/env zsh
+
+# Configuration
+counts_dir="${HOME}/Library/Application Support/KeyCue/Key Counts"
+
+# 1. Check if directory exists
+if [[ ! -d "${counts_dir}" ]]; then
+  echo "⚠️  Folder not found: ${counts_dir}"
+  echo "   (KeyCue might not be installed or hasn't created the folder yet.)"
+  exit 0
+fi
+
+# 2. Check if it is already locked
+# ls -ldO shows file flags. We grep for 'uchg' (User Immutable).
+if /bin/ls -ldO "${counts_dir}" | grep -q "uchg" ; then
+  echo "✅ Folder is already LOCKED."
+  echo "   KeyCue tracking is currently disabled. No action needed."
+  exit 0
+fi
+
+# 3. If we get here, it exists but is UNLOCKED. Time to act.
+echo "🔓 Folder is unlocked. Initializing lockdown..."
+
+# A. Kill KeyCue to release file handles
+echo "💀 Stopping KeyCue..."
+killall KeyCue 2>/dev/null
+
+# B. Delete the tracking files
+echo "🧹 Cleaning existing data..."
+setopt +o nomatch
+rm -rf "${counts_dir}"/*
+
+# C. Lock the folder
+echo "🔒 Locking folder..."
+chflags uchg "${counts_dir}"
+
+# D. Restart KeyCue
+echo "🚀 Restarting KeyCue..."
+open -a "KeyCue"
+
+echo "✅ Tracking Disabled. KeyCue can no longer write to this folder."
