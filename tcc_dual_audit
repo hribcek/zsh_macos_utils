@@ -32,7 +32,7 @@ delimiter=$'\x1F'
 # printf "database,service,client,client_type,bundle_id,path,tcc_status\n"
 
 # Function to process and verify the TCC records
-process_records() {
+function process_records() {
   local tcc_records="${1}"
   local db_source="${2}" # "system" or "user"
 

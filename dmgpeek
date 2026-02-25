@@ -1,0 +1,32 @@
+#!/usr/bin/env zsh
+
+function _dmgpeek() {
+  if [[ -z "${1}" || ! -f "${1}" ]]; then
+    echo "Usage: ${0:t} <file.dmg>"
+    return 1
+  fi
+
+  local dmgPath="${1}"
+  # Create a unique temp folder using the script's Process ID ($$)
+  local mntPoint="/tmp/dmgpeek_${$}"
+
+  mkdir -p "${mntPoint}"
+
+  printf "🔍 Peeking into: %s...\n\n" "${dmgPath:t}"
+
+  # Mount invisibly and quietly
+  if hdiutil attach "${dmgPath}" -nobrowse -noverify -mountpoint "${mntPoint}" -quiet ; then
+    # Show the contents
+    find "${mntPoint}" -maxdepth 2 -not -path "*/\.*" | sed "s~^${mntPoint}~~" | sed '/^$/d' | head -n 15
+
+    printf "\n🧹 Unmounting...\n"
+    hdiutil detach "${mntPoint}" -force -quiet
+  else
+    echo "❌ Failed to mount DMG."
+  fi
+
+  # Cleanup
+  rmdir "${mntPoint}" &>/dev/null
+}
+
+_dmgpeek "${@}"

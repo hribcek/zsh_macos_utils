@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 
 # --- Configuration ---
-subsystem="xyz.hribar.sssilencer"
+SELF="xyz.hribar.sssilencer"
 default_range="1d"
 
 # --- 0. Sudo Refresh ---
@@ -20,14 +20,14 @@ if [[ ! "${range}" =~ ^[1-9][0-9]*[mhd]\|boot$ ]]; then
   exit 1
 fi
 
-# --- 3. Checking Service Status
-echo "⚙️  Service Status (${subsystem}):"
-if ! sudo launchctl list | grep "${subsystem}" ; then
+# --- 3. Checking Service Status ---
+echo "⚙️  Service Status (${SELF}):"
+if ! sudo launchctl list | grep "${SELF}" ; then
   echo "   (Not loaded)"
 fi
 echo "--------------------------------------------------------------------------"
 
 # --- 4. Execute Log Search ---
-echo "🔍 Searching logs for subsystem '${subsystem}' (Last: ${range})..."
+echo "🔍 Searching logs for subsystem '${SELF}' (Last: ${range})..."
 echo "--------------------------------------------------------------------------"
-/usr/bin/log show --predicate "subsystem == '${subsystem}'" --style syslog --last "${range}" # | grep --color=always -E "Patrol|Error|Anomaly|$"
+/usr/bin/log show --predicate "subsystem == '${SELF}'" --style syslog --last "${range}"

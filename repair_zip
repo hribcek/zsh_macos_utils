@@ -63,7 +63,7 @@ if [[ ! -f "${zipfile}" ]]; then
 fi
 
 # Main Function
-repair_zip() {
+function repair_zip() {
   local input_file="${1}"
   local forcezip="${2:-0}"
   local force7zz="${3:-0}"
@@ -129,22 +129,17 @@ repair_zip() {
     _bh_normal_ "Running 'jar' extraction to '${jar_dir}'..."
     mkdir -p "${jar_dir}"
 
-    # jar extracts to current directory, so we must subshell
-    (
+    # jar extracts to current directory, so we must subshell to avoid changing the main script's working directory
+    local abs_input_file="${input_file:A}"
+    if (
       cd "${jar_dir}" || return 1
-      if jar xf "../${input_file}" ; then
-        if [[ -n "$(ls -A .)" ]]; then
+      if jar xf "${abs_input_file}" ; then
+        if find . -mindepth 1 -maxdepth 1 -print -quit >/dev/null ; then
           return 0
-        else
-          return 1
         fi
-      else
-        return 1
       fi
-    )
-
-    # Check exit code of subshell
-    if (( ${?} == 0 )); then
+      return 1
+    ) ; then
       _bh_success_ "Recovery successful. Files extracted to '${jar_dir}'/"
     else
       _bh_error_ "'jar' recovery failed."

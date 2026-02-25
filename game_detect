@@ -1,0 +1,30 @@
+#!/usr/bin/env zsh
+setopt extended_glob
+
+if [[ -z "${1}" || ! -d "${1}" ]]; then
+  echo "Error: no parameter or it is not a directory!"
+  exit 1
+fi
+
+gameDir="${1}"
+
+echo "Scanning for Game Engine Versions in \"${gameDir}\"..."
+echo "--------------------------------------------------"
+
+# --- Check for Godot Games ---
+for pck in ${gameDir}/**/*.pck(N) ; do
+  ver=$(hexdump -s 8 -n 12 -e '1/4 "%u." 1/4 "%u." 1/4 "%u"' "${pck}" | gsed 's/\.$//')
+  size=$(gstat -c "%s" "${pck}")
+  fmtSize=$(gprintf "%'d" "${size}")
+
+  gprintf "\033[1;34mGodot v%-8s\033[0m | %15s bytes | %s\n" "${ver}" "${fmtSize}" "${pck}"
+done
+
+# --- Check for Ren'Py Games ---
+for rpy in ${gameDir}/**/vc_version.py(N) ; do
+  ver=$(ggrep -E "version =" "${rpy}" | gcut -d'"' -f2)
+  size=$(gstat -c "%s" "${rpy}")
+  fmtSize=$(gprintf "%'d" "${size}")
+
+  gprintf "\033[1;35mRenPy v%-8s\033[0m | %15s bytes | %s\n" "${ver}" "${fmtSize}" "${rpy}"
+done

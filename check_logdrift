@@ -22,7 +22,7 @@ else
 fi
 
 # --- Configuration ---
-check_component() {
+function check_component() {
   local name="${1}"
   local cmd_type="${2}"
   local target="${3}"
@@ -78,9 +78,10 @@ else
   echo ""
 
   # 4. Ask user for confirmation
-  local prompt_msg="choice?Do you want to fix this now? (y/n) "
   if (( strict_mode == 1 )); then
     prompt_msg="choice?Do you want to ENFORCE strict silence (level:off)? (y/n) "
+  else
+    prompt_msg="choice?Do you want to fix this now? (y/n) "
   fi
 
   # 5. Read user input
@@ -110,7 +111,6 @@ else
     sleep 10
 
     # 6. Quick verify
-    local verify_ws
     verify_ws=$(sudo log config "--process" "WindowServer" --status 2>/dev/null)
 
     echo "Current Status (WindowServer Process): ${verify_ws}"

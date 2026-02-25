@@ -1,0 +1,35 @@
+#!/usr/bin/env zsh
+
+dmg_path="${HOME}/Downloads/barely_working.dmg"
+mnt_point="/tmp/${dmg_path:r:t}"
+
+src_path="Barely Working.app"
+dest_path="/Volumes/NewGamez/incoming"
+appl_dir="${src_path:t:gs/ /}"
+
+function _dmgcopy() {
+  {
+    # Create a temporary directory
+    mkdir -p "${mnt_point}"
+
+    # Mount .dmg directly to that directory
+    hdiutil attach "${dmg_path}" -nobrowse -noverify -mountpoint "${mnt_point}"
+
+    # Check if there is source
+    if [[ ! -d "${mnt_point}/${src_path}" ]]; then
+      echo "Error: Source directory \"${mnt_point}/${src_path}\" does not exist."
+      return 1
+    fi
+
+    # Copy perfectly keeping all Mac metadata intact
+    ditto -V "${mnt_point}/${src_path}" "${dest_path}/${appl_dir}"
+
+  } always {
+    # Cleanup guaranteed to run
+    hdiutil detach "${mnt_point}" -force -quiet
+    rmdir "${mnt_point}" &>/dev/null
+  }
+}
+
+# Execute the function
+_dmgcopy

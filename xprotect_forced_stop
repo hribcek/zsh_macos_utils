@@ -1,8 +1,9 @@
 #!/usr/bin/env zsh
 
 # Configuration
-SELF="xyz.hribar.sssilencer"
+SELF="xyz.hribar.xprotect_forced"
 CMD="ServiceStop"
+# plistLoc="/Library/LaunchDaemons/${SELF}.plist"
 
 # Our own logging utility
 logExec="/usr/local/bin/bhlog"

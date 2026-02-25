@@ -16,7 +16,7 @@ if (( ! ${+functions[_bh_error_]} )); then
 fi
 
 # Function: Pre-calculate local IPs and Broadcast addresses
-cache_system_ips() {
+function cache_system_ips() {
   local ip_data
   local ip_addr
   local label
@@ -42,7 +42,7 @@ cache_system_ips() {
   done <<< "${ip_data}"
 }
 
-get_asn_from_ip() {
+function get_asn_from_ip() {
   local target_ip="${1}"
   local response
   local ipapi_status
@@ -88,7 +88,7 @@ get_asn_from_ip() {
   fi
 }
 
-get_hostname_ptr() {
+function get_hostname_ptr() {
   local target_ip="${1}"
   local ptr_record
 
@@ -105,7 +105,7 @@ get_hostname_ptr() {
   fi
 }
 
-resolve_ip_from_host() {
+function resolve_ip_from_host() {
   local host="${1}"
   local resolved_ip
 
@@ -116,7 +116,7 @@ resolve_ip_from_host() {
 
 # --- Main Logic ---
 
-process_logi_file() {
+function process_logi_file() {
   local input_file="${1}"
   local line
 

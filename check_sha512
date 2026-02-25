@@ -1,0 +1,15 @@
+#!/usr/bin/env zsh
+
+# Godot downloads - check SHA512 of your downloaded Godot asset
+
+zipFile="${1:-no.zip}"
+shaFile="${2:-SHA512-SUMS.txt}"
+
+zipFileSha=$(gsha512sum "${zipFile}" | gawk '{print $1}')
+shaFileCheck=$(ggrep "${zipFileSha}" "${shaFile}" | gawk '{print $2}')
+
+if [[ "${shaFileCheck}" = "${zipFile}" ]]; then
+  echo "OK: found correct SHA512 in file \"${shaFile}\"."
+else
+  echo "ERROR: no SHA512 of \"${zipFile}\" was found in \"${shaFile}\"!"
+fi

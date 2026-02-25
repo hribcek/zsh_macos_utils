@@ -2,10 +2,26 @@
 
 # --- DEPENDENCIES ---
 # Requires 'coreutils' (for gdate): brew install coreutils
+# Requires 'osxmetadata': pip install osxmetadata
 # --------------------
 
-# --- LOGGING ---
-logMsg() {
+# --- CONFIGURATION ---
+export PYENV_VERSION=3.13.11
+
+# --- TWO MODES OF OPERATION ---
+# 1. Old one (attr):    uses kMDItemLastUsedDate attribute (not working as it should)
+# 2. New one (comment): uses comment to store "Last Opened: <date>" (visible in Finder, more reliable)
+_storagemode="attr" # Options: "attr" or "comment"
+if [[ "${_storagemode}" == "comment" ]]; then
+  _readmode=(attr comment)
+  _writemode=(comment)
+else  # default to "attr" mode for backward compatibility
+  _readmode=(attr)
+  _writemode=(attr)
+fi
+
+# Function for logging with timestamps
+function logMsg() {
   local msg="${1}"
   local timestamp
   timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
@@ -13,19 +29,21 @@ logMsg() {
 }
 
 # --- ARGUMENT PARSING ---
-
 mode=""
 targetDir=""
+debug=0
 
 for arg in "${@}" ; do
   case "${arg}" in
     --consolidate|--check|--fix|--prune)
       if [[ -n "${mode}" ]]; then
-        logMsg "Error: Multiple modes specified. Please choose one."
+        logMsg "Error: Multiple modes specified."
         exit 1
       fi
-      # Strip the leading '--' to normalize mode name
       mode="${arg#--}"
+      ;;
+    --debug)
+      debug=1
       ;;
     -*)
       logMsg "Error: Unknown option '${arg}'."
@@ -33,7 +51,7 @@ for arg in "${@}" ; do
       ;;
     *)
       if [[ -n "${targetDir}" ]]; then
-        logMsg "Warning: Multiple target directories specified. Using the first one."
+        logMsg "Warning: Multiple target directories. Using first."
       else
         targetDir="${arg}"
       fi
@@ -41,7 +59,6 @@ for arg in "${@}" ; do
   esac
 done
 
-# Apply Defaults
 mode="${mode:-check}"
 targetDir="${targetDir:-${PWD}}"
 
@@ -64,22 +81,20 @@ fi
 # --- LOCKING MECHANISM ---
 lockAcquired=0
 
-cleanup() {
+# Function to clean up lock on exit
+function cleanup() {
   if (( lockAcquired )) && [[ -d "${lockFile}" ]]; then
     rmdir "${lockFile}" 2>/dev/null
   fi
 }
-
-# Fix for Ctrl+C:
-# 1. Trap EXIT to ensure cleanup always runs when the script ends.
-# 2. Trap INT/TERM to explicitly exit, which triggers the EXIT trap.
 trap cleanup EXIT
 trap "exit 1" INT TERM
 
+# Function to acquire a lock by creating a directory. Retries if lock is held by another process.
 lockRetries=50
 lockSleep=0.1
 
-acquireLock() {
+function acquireLock() {
   local retries=${lockRetries}
   while (( retries > 0 )); do
     if mkdir "${lockFile}" 2>/dev/null ; then
@@ -92,227 +107,333 @@ acquireLock() {
   return 1
 }
 
-# --- DATE UTILITIES ---
-
-# Convert date string to timestamp for comparison
-getTimestamp() {
+# --- HELPER FUNCTIONS ---
+# Function to convert various date formats to epoch.
+# Handles both epoch (digits only) and human-readable strings.
+function getTimestamp() {
   local dateStr="${1}"
   if [[ -z "${dateStr}" || "${dateStr}" == "(null)" ]]; then
     echo 0
     return
   fi
-  # Use gdate to parse diverse input formats
-  gdate -d "${dateStr}" +%s 2>/dev/null || echo 0
+  # Handle both epoch (digits only) and String formats
+  if [[ "${dateStr}" =~ ^[0-9]+$ ]]; then
+    echo "${dateStr}"
+  else
+    # Convert human-readable string to epoch
+    local ts
+    ts=$(gdate -d "${dateStr}" +%s 2>/dev/null)
+    if [[ -n "${ts}" ]]; then
+      echo "${ts}"
+    else
+      echo 0
+    fi
+  fi
 }
 
-# --- CORE FUNCTIONS ---
+# Function writes last opened date into kMDItemLastUsedDate metadata attribute
+# Note: We use osxmetadata for writing because it handles the correct formatting and indexing for Spotlight, while using xattr directly can lead to unindexed attributes that don't work as expected.
+function saveTsToMetadata() {
+  # check if _writemode includes "attr" before attempting to set it
+  if [[ ! " ${_writemode[*]} " == *" attr "* ]]; then
+    return
+  fi
+
+  local filepath="${1}"
+  local dateStr="${2}"
+
+  if ! osxmetadata --set kMDItemLastUsedDate "${dateStr}" "${filepath}" &>/dev/null ; then
+    logMsg "Warning: Metadata write failed for ${filepath:t}."
+  fi
+}
+
+# Function reads last opened date from kMDItemLastUsedDate metadata attribute and returns it as epoch
+# Note: We use mdls because osxmetadata --get returns the raw string which can be in various formats, while mdls -raw gives a consistent format for parsing.
+function readTsFromMetadata() {
+  # check if _readmode includes "attr" before attempting to read it
+  if [[ ! " ${_readmode[*]} " == *" attr "* ]]; then
+    echo 0
+    return
+  fi
+
+  local filepath="${1}"
+  local rawDate
+
+  rawDate=$(mdls -name kMDItemLastUsedDate -raw "${filepath}" 2>/dev/null)
+  getTimestamp "${rawDate}"
+}
+
+# Function writes last opened date into Finder comment
+# Note: We use osascript to set the comment because it ensures the comment is properly set in a way that Finder recognizes, while using xattr directly can lead to comments that don't show up or aren't editable in Finder.
+function saveTsToFinderComments() {
+  # check if _writemode includes "comment" before attempting to set it
+  if [[ ! " ${_writemode[*]} " == *" comment "* ]]; then
+    return
+  fi
+
+  local filepath="${1}"
+  local dateStr="${2}"
+  local osaErr
+
+  # "Comments Hijack": Use AppleScript to make the date visible in Finder
+  # We capture stderr (2>&1) to log errors if Finder refuses
+  osaErr=$(osascript -e "tell application \"Finder\" to set comment of (POSIX file \"${filepath}\" as alias) to \"Last Opened: ${dateStr}\"" 2>&1)
+
+  if [[ $? -ne 0 ]]; then
+    logMsg "Warning: Finder Comment failed for ${filepath:t}: ${osaErr}"
+  fi
+}
+
+# Function reads last opened date from Finder comment (expects format: "Last Opened: <date>") and returns it as epoch
+# Note: We use osxmetadata to read the comment because it ensures we get the actual comment text, while using xattr directly can lead to issues with encoding and formatting.
+function readTsFromFinderComments() {
+  # check if _read includes "comment" before attempting to set it
+  if [[ ! " ${_readmode[*]} " == *" comment "* ]]; then
+    echo 0
+    return
+  fi
+
+  local filepath="${1}"
+  local comment
+
+  comment=$(osxmetadata --get com.apple.metadata:kMDItemFinderComment "${filepath}" 2>/dev/null)
+  if [[ "${comment}" =~ Last\ Opened:\ (.+) ]]; then
+    getTimestamp "${match[1]}"
+  else
+    echo 0
+  fi
+}
 
 typeset -A backupDb
 
-# Loads backup file into global associative array 'backupDb'
-# Handles deduplication (consolidate logic in memory)
-loadBackup() {
-  local currentStoredDate
-  local tsStored
-  local tsNew
-
+# Function loads backup data from a file into 'backupDb' associative array, converting dates to Epoch
+function loadBackup() {
+  local appName appDate currentStored tsStored tsNew countRead
   backupDb=()
 
   if [[ -f "${backupFile}" ]]; then
-    # Read line by line. IFS is Tab.
-    while IFS=$'\t' read -r appName appDate ; do
-      # Skip comments or empty lines
+    while IFS=$'\t' read -r appName appDate || [[ -n "${appName}" ]]; do
       if [[ "${appName}" == \#* || -z "${appName}" ]]; then
         continue
       fi
 
-      # Deduplication Logic: Keep newest
-      currentStoredDate="${backupDb[${appName}]}"
+      (( countRead++ ))
 
-      if [[ -z "${currentStoredDate}" ]]; then
-        backupDb[${appName}]="${appDate}"
+      # FORCE EPOCH CONVERSION ON LOAD
+      # This ensures 'backupDb' only ever holds Epoch Integers,
+      # regardless of what format was in the file.
+      tsNew=$(getTimestamp "${appDate}")
+
+      # Skip invalid/zero dates
+      if (( tsNew == 0 )); then
+        continue
+      fi
+
+      currentStored="${backupDb[${appName}]}"
+
+      if [[ -z "${currentStored}" ]]; then
+        backupDb[${appName}]="${tsNew}"
       else
-        tsStored=$(getTimestamp "${currentStoredDate}")
-        tsNew=$(getTimestamp "${appDate}")
-
-        if (( tsNew > tsStored )); then
-          backupDb[${appName}]="${appDate}"
+        # currentStored is now guaranteed to be Epoch
+        if (( tsNew > currentStored )); then
+          backupDb[${appName}]="${tsNew}"
         fi
       fi
     done < "${backupFile}"
   fi
+
+  if (( debug )); then
+    logMsg "[loadBackup] read lines: ${countRead}, lines in mem: ${#backupDb}"
+  fi
 }
 
-saveBackup() {
-  local tempFile
-  local sortedApps
-  local appDate
+# Function writes the 'backupDb' associative array back to the file
+function saveBackup() {
+  local tempFile="${backupFile}.tmp"
+  logMsg "Saving consolidated backup (Format: Epoch)..."
+  echo "# Format: Filename <TAB> EpochTimestamp" > "${tempFile}"
 
-  logMsg "Writing consolidated backup to ${backupFile}..."
-
-  tempFile="${backupFile}.tmp"
-  echo "# Format: AppName <TAB> LastUsedDate" > "${tempFile}"
-
-  sortedApps=("${(@k)backupDb}")
-
-  # Zsh expansion flag (o) sorts the array
-  for appName in "${(@o)sortedApps}" ; do
-    appDate="${backupDb[${appName}]}"
-    echo "${appName}\t${appDate}" >> "${tempFile}"
+  # backupDb holds only Epochs now, so this writes the clean format
+  for appName in "${(@ok)backupDb}" ; do
+    echo "${appName}\t${backupDb[${appName}]}" >> "${tempFile}"
   done
-
   mv "${tempFile}" "${backupFile}"
 }
 
-# --- SHARED LOGIC (DRY) ---
+function syncDirectories() {
+  local operationMode="${1}" # can be "check" or "fix"
+  if [[ "${operationMode}" != "check" && "${operationMode}" != "fix" ]]; then
+    logMsg "Error: Invalid operation mode '${operationMode}' in syncDirectories."
+    exit 1
+  fi
 
-# Global counter for synchronizations/anomalies
-changeCount=0
-
-# Scans directory and compares with backupDb
-# Arguments:
-#   1: operationMode ("check" or "fix")
-syncDirectories() {
-  local operationMode="${1}"
-  local appName
-  local rawFsDate
-  local tsFs
-  local rawBackupDate
-  local tsBackup
-  local touchFmt
-
+  local appName rawFsDate tsFs tsBackup formattedDate
   changeCount=0
 
+  # Scan .app files in target directory
   for appPath in "${targetDir}"/*.app(N) ; do
-    appName=$(basename "${appPath}")
+    appName="${appPath:t}"
 
-    # Get Filesystem Date
-    rawFsDate="$(mdls -name kMDItemLastUsedDate -raw "${appPath}")"
+    # Read from enabled readmodes in order until we get a valid timestamp
+    for _mode in "${_readmode[@]}" ; do
+      case "${_mode}" in
+        attr)
+          # Extract date from kMDItemLastUsedDate attribute
+          tsFs=$(readTsFromMetadata "${appPath}")
+          ;;
+        comment)
+          # Extract date from comment (expects format: "Last Opened: <date>")
+          tsFs=$(readTsFromFinderComments "${appPath}")
+          ;;
+        *)
+          # Invalid _readmode, ignore it
+          ;;
+      esac
 
-    tsFs=$(getTimestamp "${rawFsDate}")
+      if (( tsFs > 0 )); then
+        break
+      fi
+    done
 
-    # Get Backup Date
-    rawBackupDate="${backupDb[${appName}]}"
+    # Prepare timestamp from backupDb for comparison
+    tsBackup="${backupDb[${appName}]}"
+    tsBackup="${tsBackup:-0}"
 
-    tsBackup=$(getTimestamp "${rawBackupDate}")
-
+    # Case 1: Filesystem is newer (Update Backup)
     if (( tsFs > tsBackup )); then
       (( changeCount++ ))
-      if [[ "${operationMode}" == "fix" ]]; then
-        logMsg "[SYNC -> BACKUP] ${appName}"
-        backupDb[${appName}]="${rawFsDate}"
-      else
-        logMsg "[ANOMALY] ${appName}: Filesystem is newer."
-        logMsg "          FS: ${rawFsDate} > Backup: ${rawBackupDate:-None}"
-      fi
 
+      case "${operationMode}" in
+        fix)
+          logMsg "[SYNC -> BACKUP] ${appName}"
+          backupDb[${appName}]="${tsFs}"
+          ;;
+        check)
+          logMsg "[ANOMALY] ${appName}: FS newer than Backup."
+          if (( debug )); then
+            dateBackup=$(gdate -d "@${tsBackup}" "+%Y-%m-%d %H:%M:%S")
+            dateFs=$(gdate -d "@${tsFs}" "+%Y-%m-%d %H:%M:%S")
+            logMsg "[ANOMALY] ${appName}: FS: ${dateFs} >>> Backup: ${dateBackup}"
+          fi
+          ;;
+        *)
+          logMsg "Error: Invalid operation mode '${operationMode}' in Case 1."
+          # ignore the error and skip it...
+          ;;
+      esac
+
+    # Case 2: Backup is newer (Restore to File)
     elif (( tsBackup > tsFs )); then
       (( changeCount++ ))
-      if [[ "${operationMode}" == "fix" ]]; then
-        logMsg "[SYNC -> APP] ${appName}"
 
-        # 1. Touch (BSD format: YYYYMMDDhhmm.ss)
-        touchFmt=$(gdate -d "${rawBackupDate}" "+%Y%m%d%H%M.%S")
-        touch -a -t "${touchFmt}" "${appPath}"
+      case "${operationMode}" in
+        fix)
+          logMsg "[SYNC -> APP] ${appName}"
 
-        # 2. Xattr
-        xattr -w "com.backup.lastopened" "${rawBackupDate}" "${appPath}"
+          # Convert epoch back to Readable for metadata tools
+          formattedDate=$(gdate -d "@${tsBackup}" "+%Y-%m-%d %H:%M:%S")
 
-        # 3. Spotlight Re-index
-        mdimport "${appPath}"
-      else
-        logMsg "[ANOMALY] ${appName}: Backup is newer."
-        logMsg "          Backup: ${rawBackupDate} > FS: ${rawFsDate:-None}"
-      fi
+          for _mode in "${_writemode[@]}" ; do
+            case "${_mode}" in
+              attr)
+                # Update kMDItemLastUsedDate attribute (Invisible)
+                saveTsToMetadata "${appPath}" "${formattedDate}"
+                ;;
+              comment)
+                # Update Finder Comment (Visible)
+                saveTsToFinderComments "${appPath}" "${formattedDate}"
+                ;;
+              *)
+                # Invalid _writemode, ignore it
+                ;;
+            esac
+          done
+          ;;
+        check)
+          if (( tsFs == 0 )); then
+            logMsg "[ANOMALY] ${appName}: Backup has date, FS not."
+            if (( debug )); then
+              dateBackup=$(gdate -d "@${tsBackup}" "+%Y-%m-%d %H:%M:%S")
+              logMsg "[ANOMALY] ${appName}: Backup: ${dateBackup}"
+            fi
+          else
+            logMsg "[ANOMALY] ${appName}: Backup newer than FS."
+            if (( debug )); then
+              dateBackup=$(gdate -d "@${tsBackup}" "+%Y-%m-%d %H:%M:%S")
+              dateFs=$(gdate -d "@${tsFs}" "+%Y-%m-%d %H:%M:%S")
+              logMsg "[ANOMALY] ${appName}: Backup: ${dateBackup} >>> FS: ${dateFs}"
+            fi
+          fi
+          ;;
+        *)
+          logMsg "Error: Invalid operation mode '${operationMode}' in Case 2."
+          # ignore the error and skip it...
+          ;;
+      esac
     fi
   done
 }
 
-# --- COMMAND IMPLEMENTATIONS ---
-
-runConsolidate() {
-  logMsg "Task: Consolidate backup file only."
-  logMsg "File: ${backupFile}"
-
+# --- TASKS ---
+# Function runs consolidation to ensure backupDb has the latest and greatest dates before any other operations
+function runConsolidate() {
   loadBackup
-  local count="${#backupDb}"
-  logMsg "Loaded and consolidated ${count} unique entries."
-
+  logMsg "Consolidated ${#backupDb} unique entries."
   saveBackup
-  logMsg "Consolidation complete."
 }
 
-runPrune() {
-  logMsg "Task: Prune backup (consolidate + remove missing files)."
-  logMsg "Target: ${targetDir}"
-
+# Function prunes backupDb entries that no longer have a corresponding file in the target directory
+function runPrune() {
   loadBackup
-  local initialCount="${#backupDb}"
   local prunedCount=0
-  local appName
-
-  # Iterate over all keys in the backup database
   for appName in "${(@k)backupDb}" ; do
-    # Check if app exists in target directory
     if [[ ! -e "${targetDir}/${appName}" ]]; then
-      logMsg "Pruning missing entry: ${appName}"
       unset "backupDb[${appName}]"
       (( prunedCount++ ))
     fi
   done
-
-  if (( prunedCount > 0 )); then
-    saveBackup
-    logMsg "Pruned ${prunedCount} entries. New total: ${#backupDb}"
-  else
-    logMsg "No missing files found. Backup is clean."
-    # Save anyway to ensure consolidation
-    saveBackup
-  fi
+  logMsg "Pruned ${prunedCount} entries."
+  saveBackup
 }
 
-runCheck() {
-  logMsg "Task: Check for anomalies (Read-Only)."
-  logMsg "Target: ${targetDir}"
-
+# Function checks for anomalies without making changes. Returns 0 if anomalies found, 1 if in sync.
+function runCheck() {
   loadBackup
   syncDirectories "check"
-
   if (( changeCount == 0 )); then
-    logMsg "No anomalies found. Backup and Filesystem are in sync."
-    return 1 # Return 1 (False) to indicate NO issues found
+    logMsg "System in sync."
+    return 1
   else
     logMsg "Found ${changeCount} anomalies."
-    return 0 # Return 0 (True) to indicate issues found
+    return 0
   fi
 }
 
-runFix() {
-  logMsg "Task: Fix anomalies (Bi-directional Sync)."
-  logMsg "Target: ${targetDir}"
-
+# Function fixes anomalies by syncing dates between backupDb and filesystem according to the latest timestamp
+function runFix() {
   loadBackup
   syncDirectories "fix"
-
   if (( changeCount > 0 )); then
     saveBackup
-    logMsg "Fixed ${changeCount} items and saved backup."
+    logMsg "Fixed ${changeCount} items."
   else
-    logMsg "Nothing to fix. Everything is in sync."
-    # Save anyway to ensure consolidation
+    logMsg "Nothing to fix."
     saveBackup
   fi
 }
 
-# --- MAIN EXECUTION ---
+# --- MAIN ---
+logMsg "Starting management utility (${mode})..."
+logMsg "* readmode: ${_readmode[*]}, writemode: ${_writemode[*]}"
 
-logMsg "Starting management utility..."
-
+# 1. Acquire Lock
 if ! acquireLock ; then
-  logMsg "Error: Could not acquire lock for ${backupFile}."
+  lockDuration=$(awk "BEGIN {printf \"%.1f\", ${lockRetries} * ${lockSleep}}")
+  logMsg "Error: Could not acquire lock for ${backupFile} after ${lockDuration} seconds."
   exit 1
 fi
 
+# 2. Run the selected operation mode
 case "${mode}" in
   consolidate)
     runConsolidate
@@ -324,20 +445,18 @@ case "${mode}" in
     runFix
     ;;
   check)
-    # runCheck returns 0 (true) if anomalies found
     if runCheck ; then
       echo ""
-      # Use `read -q` for Zsh single-char confirmation (y/n)
-      if read -q "?Anomalies detected. Would you like to fix them now? (y/n) " ; then
-        echo "" # Newline after response
-        logMsg "User requested fix. Proceeding..."
+      if read -q "?Anomalies found. Fix now? (y/n) " ; then
+        echo ""
         runFix
       else
-        echo "" # Newline after response
-        logMsg "User declined fix."
+        echo ""
       fi
     fi
     ;;
 esac
 
+# 3. Cleanup and exit
 logMsg "Done."
+exit 0

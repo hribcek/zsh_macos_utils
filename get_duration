@@ -4,7 +4,7 @@
 
 zmodload zsh/datetime
 
-_get_duration() {
+function _get_duration() {
   local startEpoch="${1}"
   local units="${2}"
 

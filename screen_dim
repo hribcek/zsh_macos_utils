@@ -21,7 +21,7 @@ fi
 # --- End Path Check ---
 
 # --- Dynamic Built-in Display ID Retrieval ---
-get_builtin_id() {
+function get_builtin_id() {
   "${brightness_cmd}" -l 2>/dev/null | grep 'built-in' | awk '{print $2}' | tr -d ':'
 }
 

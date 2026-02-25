@@ -19,7 +19,7 @@ system_tail="/usr/bin/tail"
 system_date="/bin/date"
 
 if [[ -z "${logfile}" ]]; then
-  echo "❌ Usage: ./ultimate_hunter_killer.zsh <path_to_T2M2_log_file>"
+  echo "❌ Usage: ${0:t} <path_to_T2M2_log_file>"
   exit 1
 fi
 if [[ ! -f "${logfile}" ]]; then

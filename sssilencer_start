@@ -1,0 +1,51 @@
+#!/usr/bin/env zsh
+
+# Configuration
+SELF="xyz.hribar.sssilencer"
+CMD="ServiceStart"
+plistLoc="/Library/LaunchDaemons/${SELF}.plist"
+
+# Our own logging utility
+logExec="/usr/local/bin/bhlog"
+
+# --- FUNCTION: _logEvent ---
+function _logEvent() {
+  local msg="${1}"
+  local timestamp
+
+  # 1. Get the timestamp
+  timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+
+  # 2. Print to standard out (for debug/console logs)
+  echo "[${timestamp}] ${SELF} ${CMD:-Check} [PPID:${$}] ${msg}"
+
+  # 3. Call the logging utility
+  if [[ -x "${logExec}" ]]; then
+    "${logExec}" "${SELF}" "${CMD:-Check}" "[PPID:${$}] ${msg}"
+  fi
+}
+
+# --- MAIN EXECUTION ---
+if [[ ! -f "${plistLoc}" ]]; then
+  _logEvent "❌ Error: Missing configuration '${plistLoc}'."
+  exit 1
+fi
+
+# 1. Ask for password upfront
+sudo -v
+
+# 2. Load the service back into the system
+_logEvent "Loading service '${SELF}'..."
+if ! sudo launchctl bootstrap system "${plistLoc}" ; then
+  _logEvent "❌ Error: Failed to bootstrap service '${SELF}' from '${plistLoc}'."
+  exit 1
+fi
+
+# 3. Force it to run RIGHT NOW (Kickstart)
+_logEvent "Kickstarting service '${SELF}'..."
+if ! sudo launchctl kickstart -k system/${SELF} ; then
+  _logEvent "❌ Error: Failed to kickstart service '${SELF}'."
+  exit 1
+fi
+
+_logEvent "✅ Done."

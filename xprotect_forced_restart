@@ -1,0 +1,59 @@
+#!/usr/bin/env zsh
+
+# Configuration
+SELF="xyz.hribar.xprotect_forced"
+CMD="ServiceRestart"
+plistLoc="/Library/LaunchDaemons/${SELF}.plist"
+
+# Our own logging utility
+logExec="/usr/local/bin/bhlog"
+
+# --- FUNCTION: _logEvent ---
+function _logEvent() {
+  local msg="${1}"
+  local timestamp
+
+  # 1. Get the timestamp
+  timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+
+  # 2. Print to standard out (for debug/console logs)
+  echo "[${timestamp}] ${SELF} ${CMD:-Check} [PPID:${$}] ${msg}"
+
+  # 3. Call the logging utility
+  if [[ -x "${logExec}" ]]; then
+    "${logExec}" "${SELF}" "${CMD:-Check}" "[PPID:${$}] ${msg}"
+  fi
+}
+
+# 0.1 Check plist existence
+if [[ ! -f "${plistLoc}" ]]; then
+  _logEvent "❌ Error: Missing configuration \"${plistLoc}\"."
+  exit 1
+fi
+
+# --- MAIN EXECUTION ---
+# 1. Ask for password upfront (refreshes sudo timestamp)
+sudo -v
+
+# 2. Unload the service
+_logEvent "Stopping service '${SELF}'..."
+sudo launchctl bootout system/${SELF} 2>/dev/null || true
+_logEvent "Service '${SELF}' stopped, now waiting for 2 seconds..."
+sleep 2
+
+
+# 3. Bootstrap (Load) the service
+_logEvent "Loading service '${SELF}'..."
+if ! sudo launchctl bootstrap system "${plistLoc}" ; then
+  _logEvent "❌ Error: Failed to bootstrap service '${SELF}' from '${plistLoc}'."
+  exit 1
+fi
+
+# 4. Kickstart (Force restart/run)
+_logEvent "Kickstarting service '${SELF}'..."
+if ! sudo launchctl kickstart -k system/${SELF} ; then
+  _logEvent "❌ Error: Failed to kickstart service '${SELF}'."
+  exit 1
+fi
+
+_logEvent "✅ Done."

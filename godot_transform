@@ -1,0 +1,253 @@
+#!/usr/bin/env zsh
+
+# Dependencies: gstat
+
+# --- ANSI color codes ---
+ansiColorGreenBold="\033[1;32m"
+ansiColorReset="\033[0m"
+
+# 1a. Accept the Windows game directory as an argument
+if [[ -z "${1}" || ! -d "${1}" ]]; then
+  echo "Usage: ${0:t} <pathToWindowsGameDirectory>"
+  exit 1
+fi
+
+# 1b. Remove trailing slash if user used tab-autocomplete
+srcPckLocation="${1%/}"
+
+# 2. Find the .pck file dynamically (Recursive)
+pckFiles=( "${srcPckLocation}"/**/*.pck(N) )
+if (( ${#pckFiles[@]} == 0 )); then
+  echo "ERROR: No .pck file found in \"${srcPckLocation}\"."
+  exit 1
+fi
+
+# 3. Handle multiple .pck files
+selectedPckPath=""
+if (( ${#pckFiles[@]} == 1 )); then
+  selectedPckPath="${pckFiles[1]}"
+else
+  echo "--------------------------------------------------"
+  echo "Multiple .pck files found. Analyzing sizes..."
+
+  largestIdx=1
+  maxSize=0
+
+  # 3a. Find the largest .pck file
+  for (( i = 1; i <= ${#pckFiles[@]}; i++ )); do
+    size=$(gstat -c "%s" "${pckFiles[${i}]}")
+    if (( size > maxSize )); then
+      maxSize=${size}
+      largestIdx=${i}
+    fi
+  done
+
+  # 3b. Print the numbered list
+  for (( i = 1; i <= ${#pckFiles[@]}; i++ )); do
+    size=$(gstat -c "%s" "${pckFiles[${i}]}")
+    fmtSize=$(print "%'d" "${size}")
+
+    if (( i == largestIdx )); then
+      print "  [${ansiColorGreenBold}%d${ansiColorReset}] %s (%s bytes) ${ansiColorGreenBold}<-- Recommended (Largest)${ansiColorReset}\n" \
+        "${i}" "${pckFiles[${i}]:t}" "${fmtSize}"
+    else
+      print "  [%d] %s (%s bytes)\n" "${i}" "${pckFiles[${i}]:t}" "${fmtSize}"
+    fi
+  done
+  echo "--------------------------------------------------"
+
+  # 3c. Prompt user for selection
+  while true ; do
+    read "?Press Enter or 'y' to use the recommended [${largestIdx}], or enter a number, or 'e' to exit: " userInput
+
+    case "${userInput}" in
+      ""|[yY])
+        selectedPckPath="${pckFiles[${largestIdx}]}"
+        break
+        ;;
+      <1->)
+        if (( userInput >= 1 && userInput <= ${#pckFiles[@]} )); then
+          selectedPckPath="${pckFiles[${userInput}]}"
+          break
+        else
+          echo "Invalid input. Please try again..."
+        fi
+        ;;
+      [eE])
+        echo "Exiting..."
+        exit 0
+        ;;
+      *)
+        echo "Invalid input. Please try again..."
+        ;;
+    esac
+  done
+fi
+
+# 4. Extract the base name of the selected .pck file to derive the game name, and get the size for display
+pckFilename="${selectedPckPath:t}"
+selectedPckSize=$(gstat -c "%s" "${selectedPckPath}")
+selectedPckFmtSize=$(print "%'d" "${selectedPckSize}")
+
+gameName="${pckFilename%.pck}"
+
+# 5. Derive the version from the directory name
+directoryName="${srcPckLocation:t}"
+if [[ "${directoryName}" == "${gameName}"* ]]; then
+  # 5a. Strip the game name and the hyphen from the front of the directory name
+  gameVersion="${directoryName#${gameName}-}"
+else
+  # 5b. Fallback to asking user to enter game version
+  gameVersion=""
+  while [[ -z "${gameVersion}" ]]; do
+    read "?Could not detect version from folder. Please enter game version (e.g., v0.1.0): " gameVersion
+  done
+fi
+
+# 5c. Prepare a sanitized version string for the destination .app name by removing any hyphens.
+#     Note: This may collapse different hyphenated versions into the same value (e.g., "v1-2-3" -> "v123"),
+#     but that ambiguity is acceptable here because:
+#       - The original gameVersion is preserved and displayed separately for the user.
+#       - destVersion is only used as a simplified, filesystem-friendly suffix in the output .app name.
+destVersion="${gameVersion//-/}"
+
+# 6. Print summary and confirm with user before proceeding
+echo "--------------------------------------------------"
+echo "Detected game:      ${gameName}"
+echo "Detected version:   ${gameVersion}"
+if [[ "${gameVersion}" != "${destVersion}" ]]; then
+  echo "Sanitized version:  ${destVersion}"
+fi
+echo "Selected pck file:  ${pckFilename} (${selectedPckFmtSize} bytes)"
+echo "--------------------------------------------------"
+while true ; do
+  read "?Proceed with transplanting this game? (y/n): " confirmInput
+  case "${confirmInput}" in
+    [yY])
+      break
+      ;;
+    [nN])
+      echo "Aborting..."
+      exit 0
+      ;;
+    *)
+      echo "Invalid input. Please enter 'y' or 'n'."
+      ;;
+  esac
+done
+
+# 7. Define variables
+# 7a. Destination path (we handle destination version before confirmation up there)
+destPath="${HOME}/Downloads"
+
+# 7b. Old and new .app name
+destOldAppName="Godot.app"
+destNewAppName="${gameName}-${destVersion}.app"
+
+# 7c. Old and new exec name
+destOldExecName="Godot"
+destNewExecName="${gameName}"
+
+# 8. Check if there are any .pck files in the runner directory which would indicate a previous failed transplant.
+# If there are, abort to prevent overwriting the game .pck files.
+found=0
+for pck in "${destPath}/${destOldAppName}"/**/*.pck(N) ; do
+  if (( ! found )); then
+    echo "ERROR: The following pcks are still in \"${destPath}/${destOldAppName}\":"
+  fi
+  echo "       - ${pck}"
+  (( found++ ))
+done
+if (( found )); then
+  echo "Found ${found} .pck files in destination directory."
+  exit 1
+fi
+
+# 9. Rename the destination .app if it hasn't already been renamed in a previous run
+if [[ ! -d "${destPath}/${destNewAppName}" ]]; then
+  if ! mvOutput=$(mv "${destPath}/${destOldAppName}" "${destPath}/${destNewAppName}" 2>&1) ; then
+    echo "ERROR: Failed to rename .app."
+    echo "       mv Error: ${mvOutput}"
+    echo ""
+    exit 1
+  fi
+fi
+
+# 10. Rename the destination executable if it hasn't already been renamed in a previous run
+if [[ ! -f "${destPath}/${destNewAppName}/Contents/MacOS/${destNewExecName}" ]]; then
+  if ! mvOutput=$(mv "${destPath}/${destNewAppName}/Contents/MacOS/${destOldExecName}" "${destPath}/${destNewAppName}/Contents/MacOS/${destNewExecName}" 2>&1) ; then
+    echo "ERROR: Failed to rename executable."
+    echo "       mv Error: ${mvOutput}"
+    echo ""
+    exit 1
+  fi
+fi
+
+# 11. Copy .pck file using the dynamically found pck path
+if ! cpOutput=$(cp "${selectedPckPath}" "${destPath}/${destNewAppName}/Contents/Resources/${pckFilename}" 2>&1) ; then
+  echo "ERROR: Failed to copy .pck file."
+  echo "       cp Error: ${cpOutput}"
+  echo ""
+  exit 1
+fi
+
+# 12. Update Info.plist - first check if it exists at the expected location
+plistPath="${destPath}/${destNewAppName}/Contents/Info.plist"
+if [[ ! -f "${plistPath}" ]]; then
+  echo "ERROR: Info.plist not found at expected location: \"${plistPath}\"."
+  exit 1
+fi
+
+# 12a. Update CFBundleName
+if ! plistOutput=$(defaults write "${plistPath}" CFBundleName "${gameName}" 2>&1) ; then
+  echo "WARNING: Failed to update CFBundleName in Info.plist. The app may not launch."
+  echo "         defaults Error: ${plistOutput}"
+  echo ""
+fi
+
+# 12b. Update CFBundleDisplayName
+if ! plistOutput=$(defaults write "${plistPath}" CFBundleDisplayName "${gameName}" 2>&1) ; then
+  echo "WARNING: Failed to update CFBundleDisplayName in Info.plist. The app may not launch."
+  echo "         defaults Error: ${plistOutput}"
+  echo ""
+fi
+
+# 12c. Update CFBundleExecutable
+if ! plistOutput=$(defaults write "${plistPath}" CFBundleExecutable "${destNewExecName}" 2>&1) ; then
+  echo "WARNING: Failed to update CFBundleExecutable in Info.plist. The app may not launch."
+  echo "         defaults Error: ${plistOutput}"
+  echo ""
+fi
+
+# 12d. Update CFBundleShortVersionString
+if ! plistOutput=$(defaults write "${plistPath}" CFBundleShortVersionString "${destVersion}" 2>&1) ; then
+  echo "WARNING: Failed to update CFBundleShortVersionString in Info.plist. The app may not launch."
+  echo "         defaults Error: ${plistOutput}"
+  echo ""
+fi
+
+# 12e. Update CFBundleVersion
+if ! plistOutput=$(defaults write "${plistPath}" CFBundleVersion "${destVersion}" 2>&1) ; then
+  echo "WARNING: Failed to update CFBundleVersion in Info.plist. The app may not launch."
+  echo "         defaults Error: ${plistOutput}"
+  echo ""
+fi
+
+# 13. Strip signatures since we modified the bundle
+if ! xattrOutput=$(xattr -cr "${destPath}/${destNewAppName}/" 2>&1) ; then
+  echo "WARNING: Failed to strip extended attributes using xattr. The app may not launch."
+  echo "         xattr Error: ${xattrOutput}"
+  echo ""
+fi
+
+# 14. Generate a fresh Ad-Hoc signature for the modified bundle
+if ! codesignOutput=$(codesign --force --sign - "${destPath}/${destNewAppName}" 2>&1) ; then
+  echo "WARNING: Failed to apply ad-hoc signature. The app may not launch."
+  echo "         codesign Error: ${codesignOutput}"
+  echo ""
+fi
+
+# 15. Done
+echo "--------------------------------------------------"
+echo "SUCCESS: Transplant complete."
+echo "Game \"${gameName}-${destVersion}\" is located here: \"${destPath}/${destNewAppName}\""

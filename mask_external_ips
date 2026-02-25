@@ -14,6 +14,6 @@ fi
 
 echo "Masking external IPs in '${filename}'..."
 
-sed -i -E "s/(0?82|0?81|0?38)\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[MASKED_IP]/g" ${filename}
+sed -i -E "s/(0?82|0?81|0?38)\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[MASKED_IP]/g" "${filename}"
 
 echo "Done."
