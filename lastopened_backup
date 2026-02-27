@@ -162,7 +162,7 @@ fi
 # 2. Initialize File
 if (( cleanMode )); then
   logMsg "Clean mode enabled. Overwriting ${backupFile}..."
-  echo "# Format: Filename <TAB> EpochTimestamp" > "${backupFile}"
+  echo "# Format: Filename <TAB> epochTimestamp" > "${backupFile}"
 else
   if [[ ! -f "${backupFile}" ]]; then
     touch "${backupFile}"
@@ -170,21 +170,22 @@ else
 fi
 
 logMsg "Backing up metadata from ${targetDir} to ${backupFile}..."
+logMsg "* readmode: ${_readmode[*]}, writemode: ${_writemode[*]}"
 
 # 3. Process Files (Apps and regular files)
 count=0
 # Note: Using (N) glob modifier to handle empty results gracefully
-# Currently scanning *.app - modify pattern if you want all files (e.g., *(.))
+# Currently scanning *.app - not recursive
 for appPath in "${targetDir}"/*.app(N) ; do
   # Get Raw Date String
   lastUsedRaw="$(mdls -name kMDItemLastUsedDate -raw "${appPath}")"
 
   if [[ "${lastUsedRaw}" != "(null)" && -n "${lastUsedRaw}" ]]; then
-    # Convert to Epoch for safer storage/comparison
+    # Convert to epoch for safer storage/comparison
     epochTs=$(gdate -d "${lastUsedRaw}" "+%s" 2>/dev/null)
 
     if [[ -n "${epochTs}" ]]; then
-      # Save: Basename <TAB> Epoch
+      # Save: Basename <TAB> epoch
       print "${appPath:t}\t${epochTs}" >> "${backupFile}"
       if (( debug )); then
         dateFs=$(gdate -d "@${epochTs}" "+%Y-%m-%d %H:%M:%S")

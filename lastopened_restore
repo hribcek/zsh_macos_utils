@@ -104,7 +104,7 @@ function getTimestamp() {
 # --- CORE FUNCTIONS ---
 typeset -A backupDb
 
-# Function loads backup data from a file into 'backupDb' associative array, converting dates to Epoch
+# Function loads backup data from a file into 'backupDb' associative array, converting dates to epoch
 function loadBackup() {
   local appName appDate currentStored tsStored tsNew countRead
   backupDb=()
@@ -118,7 +118,7 @@ function loadBackup() {
       (( countRead++ ))
 
       # FORCE EPOCH CONVERSION ON LOAD
-      # This ensures 'backupDb' only ever holds Epoch Integers,
+      # This ensures 'backupDb' only ever holds epoch Integers,
       # regardless of what format was in the file.
       tsNew=$(getTimestamp "${appDate}")
 
@@ -132,7 +132,7 @@ function loadBackup() {
       if [[ -z "${currentStored}" ]]; then
         backupDb[${appName}]="${tsNew}"
       else
-        # currentStored is now guaranteed to be Epoch
+        # currentStored is now guaranteed to be epoch
         if (( tsNew > currentStored )); then
           backupDb[${appName}]="${tsNew}"
         fi
@@ -188,11 +188,11 @@ function restoreLastOpened() {
   local errorCount=0
 
   # Construct a human-readable string of modes being restored for logging
-  local modes_str="${_writemode[*]}"
-  modes_str="${modes_str//attr/metadata}"
-  modes_str="${modes_str//comment/Finder comments}"
-  modes_str="${modes_str// /, }"
-  logMsg "Restoring ${modes_str}..."
+  local modesStr="${_writemode[*]}"
+  modesStr="${modesStr//attr/metadata}"
+  modesStr="${modesStr//comment/Finder comments}"
+  modesStr="${modesStr// /, }"
+  logMsg "Restoring ${modesStr}..."
 
   for filePath in "${(@k)backupDb}" ; do
     targetPath="${targetDir}/${filePath}"

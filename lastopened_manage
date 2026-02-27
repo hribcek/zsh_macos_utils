@@ -206,7 +206,7 @@ function readTsFromFinderComments() {
 
 typeset -A backupDb
 
-# Function loads backup data from a file into 'backupDb' associative array, converting dates to Epoch
+# Function loads backup data from a file into 'backupDb' associative array, converting dates to epoch
 function loadBackup() {
   local appName appDate currentStored tsStored tsNew countRead
   backupDb=()
@@ -220,7 +220,7 @@ function loadBackup() {
       (( countRead++ ))
 
       # FORCE EPOCH CONVERSION ON LOAD
-      # This ensures 'backupDb' only ever holds Epoch Integers,
+      # This ensures 'backupDb' only ever holds epoch Integers,
       # regardless of what format was in the file.
       tsNew=$(getTimestamp "${appDate}")
 
@@ -234,7 +234,7 @@ function loadBackup() {
       if [[ -z "${currentStored}" ]]; then
         backupDb[${appName}]="${tsNew}"
       else
-        # currentStored is now guaranteed to be Epoch
+        # currentStored is now guaranteed to be epoch
         if (( tsNew > currentStored )); then
           backupDb[${appName}]="${tsNew}"
         fi
@@ -250,10 +250,10 @@ function loadBackup() {
 # Function writes the 'backupDb' associative array back to the file
 function saveBackup() {
   local tempFile="${backupFile}.tmp"
-  logMsg "Saving consolidated backup (Format: Epoch)..."
-  echo "# Format: Filename <TAB> EpochTimestamp" > "${tempFile}"
+  logMsg "Saving consolidated backup (Format: epoch)..."
+  echo "# Format: Filename <TAB> epochTimestamp" > "${tempFile}"
 
-  # backupDb holds only Epochs now, so this writes the clean format
+  # backupDb holds only epochs now, so this writes the clean format
   for appName in "${(@ok)backupDb}" ; do
     echo "${appName}\t${backupDb[${appName}]}" >> "${tempFile}"
   done
