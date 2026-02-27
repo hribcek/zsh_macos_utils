@@ -1,12 +1,15 @@
 #!/usr/bin/env zsh
 
 # ==============================================================================
-# ULTIMATE CLEANER
+# tm_uc (Time Machine Ultimate Cleaner)
+#
 # Automates the cleanup of stuck Time Machine snapshots based on T2M2 logs.
+#
 # SMART MODE: Uses "Time Gap Detection" to identify the full cluster of
 # errors from the most recent run, regardless of how long the run took.
+#
 # COMPATIBILITY: Forces usage of macOS system binaries for date/tail to
-# avoid conflicts with GNU Coreutils (glib) in PATH.
+# avoid conflicts with GNU Coreutils in PATH.
 # ==============================================================================
 
 # 1. Configuration
@@ -26,7 +29,12 @@ if [[ ! -f "${logfile}" ]]; then
   echo "❌ Log file not found: ${logfile}"
   exit 1
 fi
+if [[ ! -r "${logfile}" ]]; then
+  echo "❌ Log file is not readable: ${logfile}"
+  exit 1
+fi
 
+echo "🚀 Starting ${0:t} (Time Machine Ultimate Cleaner)..."
 echo "🔍 Parsing log file: ${logfile}..."
 
 # 2. Isolate the last report block
@@ -35,6 +43,10 @@ startLine=$(grep -n "errors reported:" "${logfile}" | ${systemTail} -n 1 | cut -
 
 if [[ -z "${startLine}" ]]; then
   echo "✅ No error summary header found. You are clean!"
+  echo ""
+  echo "Note: Don't forget to remove log file:"
+  echo "      rm -f ${logfile}"
+  echo ""
   exit 0
 fi
 
@@ -46,6 +58,10 @@ errorLines=$(${systemTail} -n +${startLine} "${logfile}" | grep "afpAccessDenied
 
 if [[ -z "${errorLines}" ]]; then
   echo "✅ No errors found in the block."
+  echo ""
+  echo "Note: Don't forget to remove log file:"
+  echo "      rm -f ${logfile}"
+  echo ""
   exit 0
 fi
 
@@ -97,6 +113,10 @@ numTargets=${#targets[@]}
 
 if (( numTargets == 0 )); then
   echo "✅ No targets found in the latest cluster."
+  echo ""
+  echo "Note: Don't forget to remove log file:"
+  echo "      rm -f ${logfile}"
+  echo ""
   exit 0
 fi
 
@@ -115,12 +135,16 @@ sudo -v
 # 6. Execute the cleanup
 echo "🚀 Starting cleanup on ${volume}..."
 
+# Get width of the maximum count
+widthMax=${#numTargets}
+
 # Counter
 count=1
 
 for timestamp in ${targets} ; do
   echo "---------------------------------------------------"
-  printf "🎯 Targeting (%3d/%3d): %s\n" "${count}" "${numTargets}" "${timestamp}"
+  # Print progress with aligned numbers (count/total)
+  printf "🎯 Targeting: %s (%*d/%*d)...\n" "${timestamp}" "${widthMax}" "${count}" "${widthMax}" "${numTargets}" 
 
   # A. Remove Database Record
   if sudo tmutil delete -d "${volume}" -t "${timestamp}" &>/dev/null ; then
@@ -157,4 +181,8 @@ for timestamp in ${targets} ; do
 done
 
 echo "---------------------------------------------------"
-echo "🎉 Ultimate Cleaner Complete."
+echo "🎉 Time Machine Ultimate Cleaner completed."
+echo ""
+echo "Note: Don't forget to remove log file:"
+echo "      rm -f ${logfile}"
+echo ""
