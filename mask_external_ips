@@ -14,6 +14,14 @@ fi
 
 echo "Masking external IPs in '${filename}'..."
 
-sed -i -E "s/(0?82|0?81|0?38)\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[MASKED_IP]/g" "${filename}"
+# Ranges to mask (spaces added for readability, but they are not allowed in the actual IP addresses, however the spaces can be substituted with zeros):
+#    38.242.169.xxx -  38.242.191.xxx
+#    81.  2.152.xxx -  81.  2.165.xxx
+#    82.129. 39.xxx -  82.129. 79.xxx
+#    93.186.151.xxx
+#   154. 57.241.xxx
+#
+# Note: xxx at the end means any value from 0 to 255.
+sed -i -E "s/(0?38\.242\.1(69|[78][0-9]|9[01])|0?81\.0?0?2\.1(5[2-9]|6[0-5])|0?82\.129\.0?(39|[4-7][0-9])|0?93\.186\.151|154\.0?57\.241)\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|0?[0-9][0-9]|0?0?[1-9])/[MASKED_IP]/g" "${filename}"
 
 echo "Done."

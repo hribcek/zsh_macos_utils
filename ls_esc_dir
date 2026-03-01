@@ -1,0 +1,56 @@
+#!/usr/bin/env zsh
+
+function _ls_esc_dir() {
+
+  function usage-ls_esc_dir() {
+    cat <<USAGEls_esc_dir
+
+  Usage: ${0#*-} [directory]
+    directory : Directory to list (default: current directory)
+
+  The output is a list of items in the specified directory, with spaces and special characters escaped
+  using zsh's (q) flag. Directories will have a trailing '/'.
+
+USAGEls_esc_dir
+  }
+
+  # Get the target, default to PWD
+  local target="${1:-${PWD}}"
+
+  # Sanitize: Resolve to a clean absolute path (removes trailing slashes, resolves ..)
+  target="${target:a}"
+
+  # Sanity check
+  if [[ ! -d "${target}" ]]; then
+    print -u2 "Error: '${target}' is not a valid directory."
+    usage-ls_esc_dir
+    return 1
+  fi
+
+  local -a results
+  local path_to_item item
+
+  # Loop through items in the sanitized directory
+  # (N) prevents errors if dir is empty.
+  for path_to_item in "${target}"/*(N) ; do
+
+    # Strip the sanitized directory path by getting the "tail" (:t)
+    item="${path_to_item:t}"
+
+    # Append '/' if the item is a directory
+    if [[ -d "${path_to_item}" ]]; then
+      item="${item}/"
+    fi
+
+    # Apply the (q) flag to escape spaces and special characters without quotes
+    results+=( "${(q)item}" )
+  done
+
+  # Print one per line, raw string
+  if (( ${#results} > 0 )); then
+    print -rl -- "${results[@]}"
+  fi
+}
+
+# Main
+_ls_esc_dir "${1}"

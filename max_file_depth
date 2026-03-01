@@ -1,0 +1,53 @@
+#!/usr/bin/env zsh
+
+function _max_file_depth() {
+
+  function usage-max_file_depth() {
+    cat <<USAGEmax_file_depth
+
+  Usage: ${0#*-} [directory]
+    directory : Directory to analyze    (default: current directory)
+
+USAGEmax_file_depth
+  }
+
+  local workDir="${PWD}"
+
+  for arg in "${@}" ; do
+    case "${arg}" in
+      -h|--help)
+        usage-max_file_depth
+        return 0
+        ;;
+      *)
+        if [[ -d "${arg}" ]]; then
+          workDir="${arg}"
+        else
+          echo "ERROR: Directory '${arg}' does not exist." >&2
+          usage-max_file_depth
+          return 1
+        fi
+        ;;
+    esac
+  done
+
+  workDir="${workDir:a}"
+
+  (
+    if ! cd "${workDir}" ; then
+      exit 1
+    fi
+
+    local -a files=( **/*.{mp4,mkv,mov,avi,wmv,flv,webm,m4v,mpg,mpeg,m2ts,mts,ts,vob,ogv,3gp}(N) )
+
+    # If files exist, print them, count the slashes, sort, and grab the max.
+    if (( ${#files} > 0 )); then
+      print -l "${files[@]}" | awk -F/ '{print NF-1}' | sort -n | tail -1
+    else
+      print "In ${workDir} there are no files with any of the following extensions:"
+      print "    .mp4, .mkv, .mov, .avi, .wmv, .flv, .webm, .m4v, .mpg, .mpeg, .m2ts, .mts, .ts, .vob, .ogv, .3gp"
+    fi
+  )
+}
+
+_max_file_depth "${@}"

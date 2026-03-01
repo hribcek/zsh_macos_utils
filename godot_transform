@@ -45,13 +45,13 @@ else
   # 3b. Print the numbered list
   for (( i = 1; i <= ${#pckFiles[@]}; i++ )); do
     size=$(gstat -c "%s" "${pckFiles[${i}]}")
-    fmtSize=$(print "%'d" "${size}")
+    fmtSize=$(printf "%'d" "${size}")
 
     if (( i == largestIdx )); then
-      print "  [${ansiColorGreenBold}%d${ansiColorReset}] %s (%s bytes) ${ansiColorGreenBold}<-- Recommended (Largest)${ansiColorReset}\n" \
+      printf "  [${ansiColorGreenBold}%d${ansiColorReset}] %s (%s bytes) ${ansiColorGreenBold}<-- Recommended (Largest)${ansiColorReset}\n" \
         "${i}" "${pckFiles[${i}]:t}" "${fmtSize}"
     else
-      print "  [%d] %s (%s bytes)\n" "${i}" "${pckFiles[${i}]:t}" "${fmtSize}"
+      printf "  [%d] %s (%s bytes)\n" "${i}" "${pckFiles[${i}]:t}" "${fmtSize}"
     fi
   done
   echo "--------------------------------------------------"
@@ -87,7 +87,7 @@ fi
 # 4. Extract the base name of the selected .pck file to derive the game name, and get the size for display
 pckFilename="${selectedPckPath:t}"
 selectedPckSize=$(gstat -c "%s" "${selectedPckPath}")
-selectedPckFmtSize=$(print "%'d" "${selectedPckSize}")
+selectedPckFmtSize=$(printf "%'d" "${selectedPckSize}")
 
 gameName="${pckFilename%.pck}"
 

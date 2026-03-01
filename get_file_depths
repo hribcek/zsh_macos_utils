@@ -1,0 +1,65 @@
+#!/usr/bin/env zsh
+
+function _get_file_depths() {
+
+  function usage-get_file_depths() {
+    cat <<USAGEget_file_depths
+
+  Usage: ${0#*-} [-<number>] [directory]
+    -<number> : Number of lines to show (default: 25)
+    directory : Directory to analyze    (default: current directory)
+
+USAGEget_file_depths
+  }
+
+  local workDir="${PWD}"
+  local linesToKeep=25
+  local numberProvided=0
+
+  for arg in "${@}" ; do
+    case "${arg}" in
+      -<1-999>)
+        if (( numberProvided )); then
+          echo "ERROR: Only one argument for lines to show is allowed." >&2
+          usage-get_file_depths
+          return 1
+        fi
+        linesToKeep=${arg#-}
+        numberProvided=1
+        ;;
+      -h|--help)
+        usage-get_file_depths
+        return 0
+        ;;
+      *)
+        if [[ -d "${arg}" ]]; then
+          workDir="${arg}"
+        else
+          echo "ERROR: Directory '${arg}' does not exist." >&2
+          usage-get_file_depths
+          return 1
+        fi
+        ;;
+    esac
+  done
+
+  workDir="${workDir:a}"
+
+  (
+    if ! cd "${workDir}" ; then
+      exit 1
+    fi
+
+    local -a files=( **/*.{mp4,mkv,mov,avi,wmv,flv,webm,m4v,mpg,mpeg,m2ts,mts,ts,vob,ogv,3gp}(N) )
+
+    # If files exist, print them, count the slashes, sort, and grab top N lines.
+    if (( ${#files} > 0 )); then
+      print -l "${files[@]}" | awk -F/ '{print NF-1 "\t" $0}' | sort -nr | head -n "${linesToKeep}"
+    else
+      print "In ${workDir} there are no files with any of the following extensions:"
+      print "    .mp4, .mkv, .mov, .avi, .wmv, .flv, .webm, .m4v, .mpg, .mpeg, .m2ts, .mts, .ts, .vob, .ogv, .3gp"
+    fi
+  )
+}
+
+_get_file_depths "${@}"
