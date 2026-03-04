@@ -8,60 +8,140 @@
 # SMART MODE: Uses "Time Gap Detection" to identify the full cluster of
 # errors from the most recent run, regardless of how long the run took.
 #
-# COMPATIBILITY: Forces usage of macOS system binaries for date/tail to
-# avoid conflicts with GNU Coreutils in PATH.
+# DEPENDENCIES: Requires GNU coreutils (df, date, tac, sed, etc.) to be
+# prioritized in PATH.
+# EXCEPTION: macOS-specific tools (tmutil, chflags, xattr) lack GNU equivalents
+# and are explicitly invoked via absolute paths per coding style rules.
 # ==============================================================================
 
-# 1. Configuration
+# 1. Configuration & Argument Parsing
 volume="/Volumes/X9ProSSD"
-logfile="${1}"
-gapThreshold=300  # 5 minutes (in seconds). Errors further apart than this are separate runs.
+logfile=""
+gapThreshold=300
+autoClean=0
+autoLogAction="ask"
+flagDeleteLog=0
+flagKeepLog=0
 
-# Explicitly define system binaries to bypass GNU Coreutils in user PATH
-systemTail="/usr/bin/tail"
-systemDate="/bin/date"
+while (( ${#} > 0 )); do
+  case "${1}" in
+    --volume=*)
+      volume="${1#*=}"
+      shift
+      ;;
+    --logfile=*)
+      logfile="${1#*=}"
+      shift
+      ;;
+    --clean)
+      autoClean=1
+      shift
+      ;;
+    --delete-log)
+      flagDeleteLog=1
+      shift
+      ;;
+    --keep-log)
+      flagKeepLog=1
+      shift
+      ;;
+    -*)
+      echo "❌ Unknown option: ${1}"
+      exit 1
+      ;;
+    *)
+      if [[ -z "${logfile}" ]]; then
+        logfile="${1}"
+      else
+        echo "❌ Unexpected parameter: ${1}"
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
 
-if [[ -z "${logfile}" ]]; then
-  echo "❌ Usage: ${0:t} <path_to_T2M2_log_file>"
+# Enforce mutual exclusivity for log actions
+if (( flagDeleteLog && flagKeepLog )); then
+  echo "❌ I'm terribly sorry, old chap, but one simply cannot delete and keep the log file simultaneously. Do pick one, won't you?"
   exit 1
 fi
+
+if (( flagDeleteLog )); then
+  autoLogAction="delete"
+elif (( flagKeepLog )); then
+  autoLogAction="keep"
+fi
+
+if [[ -z "${logfile}" ]]; then
+  echo "❌ Usage: ${0:t} [{--logfile=<path> | <path>}] [--volume=<path>] [--clean] [--delete-log | --keep-log]"
+  exit 1
+fi
+
 if [[ ! -f "${logfile}" ]]; then
   echo "❌ Log file not found: ${logfile}"
   exit 1
 fi
+
 if [[ ! -r "${logfile}" ]]; then
   echo "❌ Log file is not readable: ${logfile}"
   exit 1
 fi
 
+if [[ ! -d "${volume}" ]]; then
+  echo "❌ Volume not found or not mounted: ${volume}"
+  exit 1
+fi
+
+# Set up the EXIT trap to handle log file cleanup (Interactive or Automated)
+trap '
+  case "${autoLogAction}" in
+    delete)
+      rm -f "${logfile}"
+      echo "   ✅ Log file auto-deleted (--delete-log)."
+      ;;
+    keep)
+      echo "   ℹ️  Log file auto-kept (--keep-log)."
+      ;;
+    ask|*)
+      printf "🗑️  Do you want to delete the log file (%s) now? [y/N]: " "${logfile}"
+      read -r choice
+      if [[ "${choice}" == "y" || "${choice}" == "Y" ]]; then
+        rm -f "${logfile}"
+        echo "   ✅ Log file deleted."
+      else
+        echo "   ℹ️  Log file kept."
+      fi
+      ;;
+  esac
+' EXIT
+
 echo "🚀 Starting ${0:t} (Time Machine Ultimate Cleaner)..."
+echo "📊 Checking volume: ${volume}..."
+
+# Using --block-size=1M ensures GNU df outputs pure integers for bash math
+mbBefore=$(df --block-size=1M --output=avail "${volume}" | sed -n '2p')
+spaceBefore=$(df -h --output=avail "${volume}" | sed -n '2p')
+
+echo "   💾 Free space before cleanup: ${spaceBefore}"
+echo ""
 echo "🔍 Parsing log file: ${logfile}..."
 
 # 2. Isolate the last report block
-# Find the LAST occurrence of "errors reported:" to ignore old appended logs
-startLine=$(grep -n "errors reported:" "${logfile}" | ${systemTail} -n 1 | cut -d: -f1)
+startLine=$(grep -n "errors reported:" "${logfile}" | tail -n 1 | cut -d: -f1)
 
 if [[ -z "${startLine}" ]]; then
   echo "✅ No error summary header found. You are clean!"
-  echo ""
-  echo "Note: Don't forget to remove log file:"
-  echo "      rm -f ${logfile}"
-  echo ""
   exit 0
 fi
 
 echo "📉 Found error summary at line ${startLine}. Reading..."
 
 # Extract raw lines with timestamps (YYYY-MM-DD HH:MM:SS)
-# We reverse the order using systemTail -r because GNU tail does not support -r
-errorLines=$(${systemTail} -n +${startLine} "${logfile}" | grep "afpAccessDenied" | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}" | ${systemTail} -r)
+errorLines=$(tail -n +${startLine} "${logfile}" | grep "afpAccessDenied" | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}" | tac)
 
 if [[ -z "${errorLines}" ]]; then
   echo "✅ No errors found in the block."
-  echo ""
-  echo "Note: Don't forget to remove log file:"
-  echo "      rm -f ${logfile}"
-  echo ""
   exit 0
 fi
 
@@ -71,41 +151,30 @@ echo "🧠 Analyzing time gaps to isolate the latest run..."
 targetLines=()
 lastEpoch=0
 
-# Read line by line (Newest -> Oldest)
 while IFS= read -r line ; do
-  # Extract timestamp string (first 19 chars: YYYY-MM-DD HH:MM:SS)
   tsStr=$(echo "${line}" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}')
 
-  # Convert to Epoch seconds (macOS compatible)
-  # Using systemDate to ensure BSD syntax (-j -f) works
-  currentEpoch=$(${systemDate} -j -f "%Y-%m-%d %H:%M:%S" "${tsStr}" "+%s" 2>/dev/null)
+  currentEpoch=$(date -d "${tsStr}" "+%s" 2>/dev/null)
 
   if [[ -z "${currentEpoch}" ]]; then
     continue
   fi
 
-  # Initialize with the very first (newest) item
   if (( lastEpoch == 0 )); then
     lastEpoch=${currentEpoch}
   fi
 
-  # Calculate gap
   diff=$(( lastEpoch - currentEpoch ))
 
-  # Check if this error belongs to the current cluster
   if (( diff > gapThreshold )); then
-    # Gap is too large! We hit the previous run. Stop here.
     break
   else
-    # Still in the same run cluster. Add to targets.
     targetLines+=("${line}")
-    # Update lastEpoch to track the cluster continuity
     lastEpoch=${currentEpoch}
   fi
 done <<< "${errorLines}"
 
 # 4. Extract snapshot targets from cluster
-# Convert array back to string, then grep
 clusterText="${targetLines[*]}"
 targets=($(echo "${clusterText}" | grep -oE '20(2[5-9]|[3-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[0-1])-[0-9]{6}' | sort | uniq))
 
@@ -113,20 +182,22 @@ numTargets=${#targets[@]}
 
 if (( numTargets == 0 )); then
   echo "✅ No targets found in the latest cluster."
-  echo ""
-  echo "Note: Don't forget to remove log file:"
-  echo "      rm -f ${logfile}"
-  echo ""
   exit 0
 fi
 
 echo "⚠️  Found ${numTargets} stuck snapshots in the latest run (Gap < ${gapThreshold}s):"
-for t in ${targets} ; do
-  echo "   - ${t}"
+
+for timestamp in ${targets} ; do
+  echo "   - ${timestamp}"
 done
+
 echo ""
-echo "Press ENTER to proceed with cleanup, or Ctrl+C to cancel."
-read
+if (( autoClean )); then
+  echo "⏩ Auto-clean enabled (--clean). Proceeding without prompt..."
+else
+  echo "Press ENTER to proceed with cleanup, or Ctrl+C to cancel."
+  read
+fi
 
 # 5. Prime sudo
 echo "🔑 Requesting sudo privileges..."
@@ -135,26 +206,22 @@ sudo -v
 # 6. Execute the cleanup
 echo "🚀 Starting cleanup on ${volume}..."
 
-# Get width of the maximum count
 widthMax=${#numTargets}
-
-# Counter
 count=1
 
 for timestamp in ${targets} ; do
   echo "---------------------------------------------------"
-  # Print progress with aligned numbers (count/total)
-  printf "🎯 Targeting: %s (%*d/%*d)...\n" "${timestamp}" "${widthMax}" "${count}" "${widthMax}" "${numTargets}" 
+  printf "🎯 Targeting: %s (%*d/%*d)...\n" "${timestamp}" "${widthMax}" "${count}" "${widthMax}" "${numTargets}"
 
   # A. Remove Database Record
-  if sudo tmutil delete -d "${volume}" -t "${timestamp}" &>/dev/null ; then
+  if sudo /usr/bin/tmutil delete -d "${volume}" -t "${timestamp}" &>/dev/null ; then
     echo "   ✅ Database record deleted."
   else
     echo "   ⚠️  Database delete skipped."
   fi
 
   # B. Remove APFS Snapshot
-  if sudo tmutil deletelocalsnapshots "${timestamp}" &>/dev/null ; then
+  if sudo /usr/bin/tmutil deletelocalsnapshots "${timestamp}" &>/dev/null ; then
     echo "   ✅ APFS Snapshot deleted."
   else
     echo "   ⚠️  Snapshot delete skipped."
@@ -162,11 +229,12 @@ for timestamp in ${targets} ; do
 
   # C. Remove Directory
   directory="${volume}/${timestamp}.previous"
+
   if [[ -d "${directory}" ]]; then
     echo "   💥 Found stubborn directory. Removing..."
-    sudo chflags -R nouchg "${directory}"
+    sudo /usr/bin/chflags -R nouchg "${directory}"
     sudo chmod -RN "${directory}" 2>/dev/null
-    sudo xattr -c -r "${directory}" 2>/dev/null
+    sudo /usr/bin/xattr -c -r "${directory}" 2>/dev/null
     sudo rm -rf "${directory}"
 
     if [[ ! -d "${directory}" ]]; then
@@ -177,12 +245,34 @@ for timestamp in ${targets} ; do
   else
     echo "   ✅ No residual directory found."
   fi
+
   (( count++ ))
 done
 
 echo "---------------------------------------------------"
+
+# --- SPACE CHECK: AFTER ---
+mbAfter=$(df --block-size=1M --output=avail "${volume}" | sed -n '2p')
+spaceAfter=$(df -h --output=avail "${volume}" | sed -n '2p')
+
+echo "   💾 Free space after cleanup:  ${spaceAfter}"
+echo ""
+mbReclaimed=$(( mbAfter - mbBefore ))
+
+echo "==================================================="
+
+if (( mbReclaimed > 0 )); then
+  printf "🎉 SUCCESS: You reclaimed %.1f GB of wasted space!\n" "$(echo "${mbReclaimed} / 1024" | bc -l)"
+elif (( mbReclaimed < 0 )); then
+  # We can get negative reclaimed space if APFS background activity (like snapshot merging) occurred during our cleanup
+  # which is a good sign that the system is healing itself. In that case, we want to
+  # report the negative change as a positive outcome to avoid confusion.
+  # This is why we are dividing by -1024 instead of 1024 in the printf below.
+  printf "🤔 Space decreased by %.1f GB (Normal APFS background activity)\n" "$(echo "${mbReclaimed} / -1024" | bc -l)"
+else
+  echo "🤷 No measurable space reclaimed."
+  echo "   (The deleted data was likely shared with a surviving APFS snapshot)"
+fi
+
+echo "==================================================="
 echo "🎉 Time Machine Ultimate Cleaner completed."
-echo ""
-echo "Note: Don't forget to remove log file:"
-echo "      rm -f ${logfile}"
-echo ""

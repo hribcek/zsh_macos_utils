@@ -1,2 +1,26 @@
+# OS
 .DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+*~
+
+# Git
+.git/
+.git-credentials
+.gitconfig.local
+
+# Ignore everything in the .vscode folder...
+.vscode/*
+
+# ...Except for the tasks, settings, and snippets.
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/*.code-snippets
+
+# macOS cache and temp files
+.cache/
+*.log
+
+# Specific utilities in here
 flexget*

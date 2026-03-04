@@ -1,0 +1,58 @@
+#!/usr/bin/env zsh
+
+# Configuration
+subsystem="xyz.hribar.torrentaut"
+plistLoc="${HOME}/Library/LaunchAgents/${subsystem}.plist"
+util="ServiceRestart"
+
+# Our own logging utility
+logBin="/usr/local/bin/bhlog"
+
+# --- FUNCTION: Log Event ---
+logEvent() {
+  local msg="${1}"
+  local timestamp
+
+  # 1. Get the timestamp
+  if (( $+commands[gdate] )); then
+    timestamp=$(gdate '+%Y-%m-%d %H:%M:%S.%6N')
+  else
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  fi
+
+  # 2. Print to standard out (for debug/console logs)
+  echo "[${timestamp}] ${subsystem} ${util:-Service} [PPID:${$}] ${msg}"
+
+  # 3. Call the logging utility
+  if [[ -x "${logBin}" ]]; then
+    "${logBin}" "${subsystem}" "${util:-Service}" "[PPID:${$}] ${msg}"
+  fi
+}
+
+# 0.1 Check plist existence
+if [[ ! -f "${plistLoc}" ]]; then
+  logEvent "❌ Error: Missing configuration \"${plistLoc}\"."
+  exit 1
+fi
+
+# 1. Unload the service
+logEvent "Stopping service '${subsystem}'..."
+launchctl bootout gui/$(id -u)/${subsystem} 2>/dev/null || true
+logEvent "Service '${subsystem} stopped, now waiting for 2 seconds..."
+sleep 2
+
+# 2. Bootstrap (Load) the service
+logEvent "Loading service '${subsystem}'..."
+if ! launchctl bootstrap gui/$(id -u) "${plistLoc}" ; then
+  logEvent "❌ Error: Failed to bootstrap service '${subsystem}' from '${plistLoc}'."
+  exit 1
+fi
+
+# 5. Kickstart (Force restart/run)
+logEvent "Kickstarting service '${subsystem}'..."
+if ! launchctl kickstart -k gui/$(id -u)/${subsystem} ; then
+  logEvent "❌ Error: Failed to kickstart service '${subsystem}'."
+  exit 1
+fi
+
+logEvent "✅ Done."
